@@ -1,0 +1,82 @@
+name: Playwright E2E Tests
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: E2E Tests - ${{ matrix.browser }}
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Create .env file
+        run: |
+          cat > tests/e2e/.env << 'EOF'
+          BASE_URL=${{ secrets.BASE_URL || 'http://127.0.0.1/QloApps-develop/' }}
+          CUSTOMER_EMAIL=${{ secrets.CUSTOMER_EMAIL || 'pub@qloapps.com' }}
+          CUSTOMER_PASSWORD=${{ secrets.CUSTOMER_PASSWORD || '123456789' }}
+          INVALID_EMAIL=${{ secrets.INVALID_EMAIL || 'unregistered_user@example.com' }}
+          INVALID_PASSWORD=${{ secrets.INVALID_PASSWORD || 'WrongPassword@123' }}
+          INVALID_EMAIL_FORMAT=${{ secrets.INVALID_EMAIL_FORMAT || 'invalid-email-format' }}
+          SQL_INJECTION_EMAIL=${{ secrets.SQL_INJECTION_EMAIL || "' OR '1'='1" }}
+          XSS_EMAIL=${{ secrets.XSS_EMAIL || "<script>alert('xss')</script>" }}
+          EOF
+
+      - name: Run Playwright tests - ${{ matrix.browser }}
+        run: npx playwright test --project=${{ matrix.browser }} --reporter=github
+        env:
+          CI: true
+
+      - name: Upload test results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.browser }}
+          path: playwright-report/
+          retention-days: 30
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.browser }}
+          path: test-results/
+          retention-days: 30
+
+  test-summary:
+    name: Test Summary
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.test.result }}" = "failure" ]; then
+            echo "❌ E2E Tests Failed"
+            exit 1
+          else
+            echo "✅ E2E Tests Passed"
+          fi
