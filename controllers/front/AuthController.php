@@ -294,7 +294,6 @@ class AuthControllerCore extends FrontController
      */
     protected function processSubmitLogin()
     {
-        die('sss');
         Hook::exec('actionBeforeAuthentication');
         $passwd = trim(Tools::getValue('passwd'));
         $_POST['passwd'] = null;
