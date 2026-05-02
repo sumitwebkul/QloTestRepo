@@ -1,251 +1,225 @@
 # AGENTS.md
 
-## Overview
+## Project Overview
 
-This document defines development guidelines for AI agents contributing to the QloApps codebase. QloApps is a hotel booking and property management platform built on PHP with an MVC architecture. These guidelines ensure code quality, security, and architectural consistency.
+QloApps is an open-source hotel reservation and property management platform. It enables hotels to manage rooms, bookings, guests, and payments through a web-based system.
 
-## Platform Architecture
+## Purpose of this File
 
-QloApps follows a modular MVC architecture with the following core principles:
+This document provides guidance for AI coding agents contributing to the QloApps project. It defines conventions, safety rules, and workflows to ensure consistent and secure code generation.
 
-### MVC Pattern
-- **Models**: Extend `ObjectModel` for database-backed entities
-- **Views**: Use Smarty templates; avoid inline HTML in controllers
-- **Controllers**: Extend `FrontController`, `AdminController`, or module variants
-- Separate business logic from presentation logic
+## Technology Stack
 
-### Core Technologies
-- **PHP**: 8.1 - 8.4
-- **Database**: MySQL 5.7 - 8.4, MariaDB 10.x
-- **Template Engine**: Smarty 3.x
-- **Caching**: File-based and Redis-compatible
-- **Web Server**: Apache 2.4+, Nginx 1.18+
+- **Language:** PHP 8.1–8.4 (backend), Smarty 3.x (templates), JavaScript/jQuery (frontend)
+- **Database:** MySQL 5.7, 8.0+; MariaDB 10.5, 10.6, 10.11, 11.0, 11.2, 11.4
+- **Architecture:** MVC with hook-based module system
+- **License:** OSL-3.0 (core), AFL-3.0 (modules)
+- **Required PHP Extensions:** PDO_MySQL, cURL, OpenSSL, SOAP, GD, SimpleXML, DOM, Zip, Phar
 
-### Database Layer
-- Use `Db::getInstance()` for all database operations
-- Always use table prefix `_DB_PREFIX_`
-- Escape values with `pSQL()` for strings and `(int)` for IDs
-- Respect multi-shop context with `Shop::addSqlRestriction()`
-- Use `bqSQL()` for table and column names
+## Environment Setup
+
+Install dependencies:
+```bash
+composer install
+```
+
+Clear caches:
+```bash
+rm -rf cache/smarty/compile/* cache/smarty/cache/*
+rm -f cache/class_index.php
+```
+
+Clear class cache after adding or modifying overrides.
+
+## Project Structure
+
+```
+.
+├── classes/              # Core models extending ObjectModel
+├── controllers/          # Front and admin controllers
+│   ├── admin/
+│   └── front/
+├── modules/              # Feature modules with isolated functionality
+├── override/             # Core class and controller overrides
+├── themes/               # Smarty templates (.tpl files)
+├── config/               # Configuration files (settings.inc.php contains secrets)
+├── cache/                # Generated cache files
+├── tests/                # PHPUnit test suite
+```
+
+**QloApps Agent Skills:** Install reusable development skills using:
+```bash
+npx skills add Qloapps/agent-skills
+```
+Available skills: module-development, payment-module-development, stats-module-development. Check installed skills before implementing new functionality.
+
+## Architecture Overview
+
+**MVC Pattern**
+- Models: classes/ extending ObjectModel
+- Controllers: FrontController or AdminController
+- Views: Smarty templates (.tpl)
+
+**Modules**
+- Located in modules/<modulename>/
+- Provide isolated functionality
+- Integrate using hooks
+
+**Overrides**
+- Located in override/
+- Extend core classes using the Core suffix
+- Clear class cache after creating overrides
+
+**Context**
+- Access runtime objects using Context::getContext()
+
+## Core vs Module Development Rules
+
+**When working on a module:**
+1. Never modify core files directly
+2. Use **hooks** to integrate module functionality into core features
+3. If no suitable hook exists, create a **custom hook** — but only if the hook placement is generic and useful for other modules too
+4. Use **overrides** only as a last resort — overrides can conflict with other module override files and require manual resolution
+
+**When working on a core feature:**
+- Make changes directly in core files
+- Do not use hooks or overrides for core-to-core changes
+
+## Coding Conventions
+
+**Classes:** PascalCase — `HotelBookingData`
+**Methods:** camelCase — `getBookingDetails()`
+**Variables:** camelCase — `$hotelId`
+**Constants:** UPPER_SNAKE_CASE — `BOOKING_STATUS_CONFIRMED`
+**Database Tables:** _DB_PREFIX_ + lowercase_snake — `qlo_hotel_booking`
+**Config Keys:** MODULENAME_SETTING — `HOTELRESERVATION_ENABLED`
+**Files:** One class per file, filename matches class name
+**Templates:** lowercase-hyphens.tpl — `booking-form.tpl`
+
+Add PHPDoc blocks to all classes and methods.
+
+## Translation
+
+Never hardcode user-facing English strings — always wrap them in the appropriate translation method.
+
+| Context | Method |
+|---------|--------|
+| Module main file | `$this->l('string')` |
+| Module admin controller | `$this->l('string')` |
+| Module front controller | `$this->module->l('string', 'controllerName')` |
+| Module classes | `$objModule->l('string', 'ClassName')` |
+| Core admin controller | `$this->l('string')` |
+| Core front controller | `Tools::displayError('string')` |
+| Smarty template (core) | `{l s='string'}` |
+| Smarty template (module) | `{l s='string' mod='modulename'}` |
+
+## Multi-language
+
+- Always include `id_lang` in queries that return translatable content
+- Use `Context::getContext()->language->id` for the current language
 
 ## Module Development Guidelines
 
-### Module Structure
-All extensions must be module-based and follow this structure:
+**Module Location:** modules/<modulename>/
 
-```
-modules/{modulename}/
-  ├── {modulename}.php        # Main module class
-  ├── config.xml              # Module metadata
-  ├── classes/                # Module-specific models
-  ├── controllers/
-  │   ├── admin/
-  │   └── front/
-  ├── views/
-  │   ├── templates/
-  │   ├── js/
-  │   └── css/
-  ├── translations/
-  └── upgrade/
-```
+**Required Files:**
+- <modulename>.php — Main class extending Module
+- config.xml — Module metadata
 
-### Module Lifecycle
-- Implement `install()` for setup and hook registration
-- Implement `uninstall()` for complete cleanup
-- Create `upgrade_module_{version}()` for version upgrades
-- Handle database schema changes with migration scripts
-- Support multi-shop and multi-language configurations
+**Optional Directories:**
+- classes/ — Module-specific models
+- controllers/ — Module controllers
+- views/templates/ — Smarty templates
+- upgrade/ — Version migration scripts
 
-### Module Configuration
-- Use the `Configuration` class for settings
-- Prefix all configuration keys with module name
-- Validate all configuration inputs
-- Provide admin configuration pages
+**Hook Integration:**
+- Register hooks in install() method
+- Unregister hooks in uninstall() method
+- Keep hook handlers lightweight
 
-## Override & Extension Rules
+**Configuration:**
+- Store settings using Configuration::updateValue()
+- Retrieve settings using Configuration::get()
+- Prefix config keys with module name
 
-### Override System
-- Place overrides in `override/{classes|controllers|modules}/`
-- Override classes extend core class with "Core" suffix
-- Delete `cache/class_index.php` after adding overrides
-- Document override purpose and impact
+## Database Rules
 
-**Example:**
-```php
-class Cart extends CartCore {
-    // Override methods here
-}
-```
+**Table Prefix:** Always use _DB_PREFIX_ constant instead of hardcoding the table prefix
 
-### Core Modification Rules
-- Never modify core files directly
-- Use the override system for extending core classes
-- Use hooks for injecting custom functionality
-- Maintain backward compatibility
+**Escaping:**
+- Strings: pSQL($value)
+- Integers: (int)$value
+- Table/column names: bqSQL($name)
 
-## Hook Usage Guidelines
+**Preferred Access:** Use ObjectModel for CRUD operations instead of raw SQL queries
 
-### Hook Registration
-- Register hooks in module `install()` method
-- Unregister in `uninstall()` method
-- Document expected parameters for custom hooks
-
-### Hook Implementation
-- Keep hook handlers lightweight (< 50ms execution)
-- Avoid database writes in display hooks
-- Use action hooks for data modifications
-- Cache hook output when appropriate
-
-### Hook Naming
-- Display hooks: `display{Location}` (e.g., `displayHeader`)
-- Action hooks: `action{Event}` (e.g., `actionOrderStatusUpdate`)
-- Use camelCase for hook names
-
-## Code Standards
-
-### Coding Style
-- Follow PSR-12 coding standards
-- Use meaningful variable and function names
-- One class per file; filename matches class name
-- Maximum function length: 50 lines
-- Maximum file length: 1000 lines
-
-### Documentation
-- Add PHPDoc blocks to all classes, methods, and properties
-- Document parameters, return types, and exceptions
-- Include `@since` tags for new features
-- Maintain changelog for all modifications
-
-### Code Quality
-- No debug statements (`var_dump()`, `print_r()`, `die()`)
-- No dead code or commented-out blocks
-- Replace magic numbers with named constants
-- Handle all error conditions appropriately
+**Prohibited:** Never concatenate raw user input into SQL queries.
 
 ## Security Guidelines
 
-### Input Validation
-- Validate all user input at controller level
-- Use `Validate::is*()` methods for type checking
-- Sanitize input before database operations
-- Implement CSRF protection for state-changing operations
+**Input Handling**
+- Use Tools::getValue() for request parameters
+- Cast numeric values to (int)
+- Escape strings using pSQL()
+- Validate input using Validate class methods
 
-### SQL Injection Prevention
-- Use `pSQL()` for string values in SQL queries
-- Cast all IDs to integer: `(int)$id`
-- Prefer `ObjectModel` methods over raw queries
-- Never concatenate user input into SQL
+**Output Escaping**
+- Use Tools::safeOutput() in PHP
+- Use Smarty escape modifiers in templates
 
-### XSS Prevention
-- Escape output with `Tools::safeOutput()` or `htmlspecialchars()`
-- Use Smarty's `|escape:'html'` modifier in templates
-- Validate and sanitize rich text content
+**Sensitive Data**
+- Never expose config/settings.inc.php
+- Never commit API keys, passwords, or tokens
 
-### Authentication & Authorization
-- Check `$this->tabAccess` in admin controllers
-- Verify permissions before sensitive operations
-- Implement rate limiting for authentication
-- Use secure session management
+**Authorization**
+- Verify permissions before performing admin operations
 
-### Sensitive Data
-- Never log passwords, tokens, or PII
-- Use environment variables for secrets
-- Comply with PCI DSS for payment data
-- Encrypt sensitive data at rest
+## Testing
 
-## Logging & Error Handling
+Testing infrastructure is being configured. Check tests/ directory for available tests before running.
 
-### Logging
-Use the platform logging system for all events:
+## AI Agent Workflow
 
-```php
-PrestaShopLogger::addLog(
-    'Operation completed: #'.$id,
-    1, // severity: 1=info, 2=warning, 3=error
-    null,
-    'EntityType',
-    $entityId
-);
-```
+1. Check installed agent skills before implementing new functionality
+2. Search codebase for similar implementations before creating new code
+3. Extend existing classes rather than duplicating functionality
+4. Follow patterns established in surrounding code
+5. Reuse existing utilities: Tools, Validate, Db, Configuration classes
+6. Prioritize consistency with existing codebase over new approaches
 
-### Logging Levels
-- **ERROR**: System errors requiring immediate attention
-- **WARNING**: Unexpected conditions
-- **INFO**: Significant business events
-- **DEBUG**: Detailed diagnostic information
+After making changes:
+- Clear caches if modifying templates or overrides
+- Add PHPDoc to new methods
 
-### Audit Logging
-- Log all financial transactions
-- Log booking state changes
-- Log administrative actions
-- Include user attribution
+## Safety Rules
 
-### Error Handling
-- Handle exceptions appropriately
-- Provide meaningful error messages
-- Never expose sensitive information in errors
-- Log errors with sufficient context
+**Agents must not:**
+- Delete files unless explicitly instructed
+- Run git commands automatically
+- Modify composer.json without approval
+- Modify config/settings.inc.php
+- Execute DROP, TRUNCATE, or destructive SQL
+- Modify core files directly when working on a module (use hooks or override system)
 
-## Performance Guidelines
+**Agents must:**
+- Use pSQL() for strings and (int) for IDs in SQL
+- Use Tools::getValue() for request parameters
+- Escape all output
+- Check installed agent skills before implementing new functionality
+- Follow project naming conventions
+- Validate inputs before processing
 
-### Query Optimization
-- Avoid N+1 queries
-- Use `JOIN` instead of multiple queries in loops
-- Add indexes for frequently queried columns
-- Use `LIMIT` clause for result sets
-- Analyze queries with `EXPLAIN`
+**Agents should ask before:**
+- Deleting any files
+- Running git commands
+- Changing dependencies
+- Modifying database schema
+- Altering payment or booking logic
 
-### Caching
-- Cache expensive computations and queries
-- Invalidate cache on data modification
-- Support multiple cache backends (file, Redis)
-- Respect cache TTL configurations
+---
 
-### Resource Management
-- Limit memory consumption per request
-- Implement pagination for large datasets
-- Use generators for large result sets
-- Avoid loading entire collections into memory
-
-### Database Design
-- Normalize schema to 3NF minimum
-- Use appropriate data types
-- Define foreign key constraints
-- Create indexes on foreign keys and search columns
-
-## Things to Avoid
-
-### Never Modify
-- Core system files without override mechanism
-- Historical financial records
-- Completed transaction totals
-- Audit trail entries
-
-### Never Introduce
-- Hardcoded credentials or secrets
-- Direct database access bypassing abstraction layer
-- Unbounded loops or recursion
-- Breaking changes to public APIs
-
-### Never Bypass
-- Input validation
-- Authentication and authorization checks
-- CSRF protection
-- SQL injection prevention
-- XSS prevention mechanisms
-
-### Never Use
-- `eval()` or dynamic code execution
-- `mysql_*` functions (use PDO/mysqli)
-- Direct `$_GET`, `$_POST`, `$_COOKIE` access (use `Tools::getValue()`)
-- Deprecated PHP features
-- Unescaped output to browser
-
-### Critical Operations
-- Never modify booking totals without recalculation
-- Never alter pricing or tax logic without validation
-- Never oversell room inventory
-- Never modify payment processing without approval
-- Always use row-level locking for inventory updates
-- Always validate availability before booking confirmation
-- Always maintain backward compatibility
+**Resources:**
+- Documentation: https://docs.qloapps.com
+- Forum: https://forums.qloapps.com
+- GitHub: https://github.com/Qloapps/QloApps
+- Security Issues: support@qloapps.com
