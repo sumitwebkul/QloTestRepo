@@ -44,9 +44,15 @@ Then write the test file to `tests/Unit/$ARGUMENTSTest.php` following those patt
 
 - Use `PHPUnit\Framework\TestCase` (PHPUnit 10 namespace)
 - Add OSL-3.0 license header
-- Mock ALL external dependencies in `setUp()` — no real DB calls
 - Test method naming: `test{MethodName}{Scenario}`
 - At least 2 test cases per public method
+- Do **NOT** define constants (`_DB_PREFIX_`, `_PS_ROOT_DIR_`, etc.) — already in `tests/bootstrap.php`
+- Do **NOT** declare inline stub classes — add missing stubs to `tests/Unit/stubs/CoreStubs.php`
+- Always configure `$this->dbMock->method('escape')->willReturnArgument(0)` in setUp — `pSQL()` calls `Db::escape()` and SQL assertions will fail if it returns null
+- Always use `Tools::encrypt(...)` in password assertions — never `md5(...)` directly
+- Use `logicalAnd(stringContains(...), stringContains(...))` when asserting SQL contains multiple predicates
+- Use `expectNotToPerformAssertions()` instead of `assertTrue(true)` for no-exception tests
+- Reset `ObjectModel::$updateResult = true` and `Group::setFeatureActive(true)` in tearDown if used
 
 ### Required Coverage Per Method
 
@@ -96,11 +102,12 @@ Use the **Agent tool** to spawn the `test-runner` sub-agent:
 
 | Error | Fix |
 |-------|-----|
-| `Class 'Db' not found` | Add `require_once` or create a stub class |
+| `Class 'X' not found` | Add stub to `tests/Unit/stubs/CoreStubs.php` |
 | `Call to undefined method` | Add missing `->method()->willReturn()` in setUp |
 | `Failed asserting that X is Y` | Re-read the class — wrong expected value |
-| `Cannot redeclare constant` | Wrap `define()` in `if (!defined(...))` |
-| `Class not found` | Add autoload require or stub at top of test file |
+| `Cannot redeclare constant` | Remove — constants are already defined in bootstrap.php |
+| SQL assertion fails / empty email in query | Add `$this->dbMock->method('escape')->willReturnArgument(0)` to setUp |
+| `Declaration of X::method() must be compatible` | Remove return type annotations from stub method in CoreStubs.php |
 | PHP fatal / syntax error | Fix syntax in the test file |
 
 ---

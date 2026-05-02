@@ -45,10 +45,11 @@ if (!class_exists('ObjectModel')) {
 
         public static $definition = [];
         public $id = null;
+        public static bool $updateResult = true;
 
         public function __construct($id = null) { $this->id = $id; }
         public function add($autodate = true, $null_values = true) { return true; }
-        public function update($null_values = false) { return true; }
+        public function update($null_values = false) { return static::$updateResult; }
         public function delete() { return true; }
         public function save() { return true; }
         public function validateFields($die = true, $error_return = false) { return true; }
@@ -185,7 +186,9 @@ if (!class_exists('Cache')) {
 if (!class_exists('Group')) {
     class Group
     {
-        public static function isFeatureActive(): bool { return true; }
+        private static bool $featureActive = true;
+        public static function setFeatureActive(bool $value): void { static::$featureActive = $value; }
+        public static function isFeatureActive(): bool { return static::$featureActive; }
     }
 }
 

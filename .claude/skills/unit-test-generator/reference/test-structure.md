@@ -3,6 +3,7 @@
 ## File Placement
 
 - Test files go in: `tests/Unit/{ClassName}Test.php`
+- Stubs for new dependencies go in: `tests/Unit/stubs/CoreStubs.php`
 - Class name inside: `{ClassName}Test`
 - Extends: `PHPUnit\Framework\TestCase`
 
@@ -25,16 +26,45 @@ use PHPUnit\Framework\TestCase;
 
 class {ClassName}Test extends TestCase
 {
+    private $dbMock;
+
     protected function setUp(): void
     {
         parent::setUp();
-        // initialize mocks and test subject here
+
+        // Set Configuration values needed by the class under test
+        Configuration::set('PS_LANG_DEFAULT', 1);
+
+        // Inject Db mock — escape() must pass through for pSQL() to work in SQL assertions
+        $this->dbMock = $this->createMock(Db::class);
+        $this->dbMock->method('escape')->willReturnArgument(0);
+        $ref = new ReflectionProperty(Db::class, 'instance');
+        $ref->setAccessible(true);
+        $ref->setValue(null, $this->dbMock);
+
+        Cache::resetAll();
     }
 
     protected function tearDown(): void
     {
+        // Reset Db singleton
+        $ref = new ReflectionProperty(Db::class, 'instance');
+        $ref->setAccessible(true);
+        $ref->setValue(null, null);
+
+        // Reset Context singleton
+        $ref = new ReflectionProperty(Context::class, 'instance');
+        $ref->setAccessible(true);
+        $ref->setValue(null, null);
+
+        // Reset configurable stub flags
+        ObjectModel::$updateResult = true;
+        Group::setFeatureActive(true);
+
+        Configuration::resetAll();
+        Cache::resetAll();
+
         parent::tearDown();
-        // reset static state if any
     }
 
     public function testMethodNameExpectedBehavior(): void
@@ -46,34 +76,40 @@ class {ClassName}Test extends TestCase
 }
 ```
 
+## What NOT to put in test files
+
+- Do **not** define constants (`_DB_PREFIX_`, `_PS_ROOT_DIR_`, etc.) — already defined in `tests/bootstrap.php`
+- Do **not** declare stub classes inline — add them to `tests/Unit/stubs/CoreStubs.php`
+- Do **not** `require_once` class files — the QloApps autoloader handles this
+
 ## Naming Conventions
 
 | What | Convention | Example |
 |------|-----------|---------|
 | Test class | `{ClassName}Test` | `ValidateTest` |
 | Test method | `test{MethodName}{Scenario}` | `testIsEmailReturnsTrueForValid` |
-| Data provider | `provide{MethodName}Cases` | `provideIsEmailCases` |
+| Data provider | `provide{MethodName}` | `provideEmailValidation` |
 
 ## Data Provider Pattern
 
-Use `@dataProvider` for methods with multiple input cases (especially validation methods):
+Use `@dataProvider` for methods with multiple input cases:
 
 ```php
 /**
- * @dataProvider provideIsEmailCases
+ * @dataProvider provideEmailValidation
  */
-public function testIsEmail(string $input, bool $expected): void
+public function testEmailFieldValidation(string $email, bool $expected): void
 {
-    $this->assertSame($expected, Validate::isEmail($input));
+    $this->assertSame($expected, Validate::isEmail($email));
 }
 
-public function provideIsEmailCases(): array
+public function provideEmailValidation(): array
 {
     return [
-        'valid email'           => ['user@example.com', true],
-        'missing at sign'       => ['userexample.com', false],
-        'empty string'          => ['', false],
-        'valid with subdomain'  => ['user@mail.example.com', true],
+        'valid email'          => ['user@example.com', true],
+        'missing at sign'      => ['userexample.com', false],
+        'empty string'         => ['', false],
+        'valid with subdomain' => ['user@mail.example.com', true],
     ];
 }
 ```
@@ -97,19 +133,28 @@ public function testSaveThrowsOnDuplicateKey(): void
 }
 ```
 
+## No-exception Pattern
+
+For tests that only verify no exception is thrown, use `expectNotToPerformAssertions()` instead of `assertTrue(true)`:
+
+```php
+public function testResetCacheOnMissingKeyDoesNotThrow(): void
+{
+    $this->expectNotToPerformAssertions();
+    SomeClass::resetCache(999);
+}
+```
+
 ## Branch Coverage Pattern
 
 Read the method body. Every `if/else` needs two tests:
 
 ```php
-// Method: public function getPrice() { if ($this->tax_rate > 0) { return $base * (1 + $this->tax_rate); } return $base; }
-
 public function testGetPriceIncludesTaxWhenRateIsPositive(): void
 {
     $room = new RoomType();
     $room->price = 100.00;
     $room->tax_rate = 0.10;
-
     $this->assertSame(110.00, $room->getPrice());
 }
 
@@ -118,48 +163,23 @@ public function testGetPriceReturnBaseWhenTaxRateIsZero(): void
     $room = new RoomType();
     $room->price = 100.00;
     $room->tax_rate = 0.0;
-
     $this->assertSame(100.00, $room->getPrice());
 }
 ```
 
-## Interaction Verification Pattern
+## SQL Assertion Pattern
 
-Assert the dependency was actually called (not just that a value was returned):
-
-```php
-public function testSaveCallsDbInsertOnce(): void
-{
-    $this->dbMock
-        ->expects($this->once())
-        ->method('insert')
-        ->with($this->equalTo('ps_room_type'), $this->anything())
-        ->willReturn(true);
-
-    $obj = new RoomType();
-    $obj->name = 'Deluxe';
-    $result = $obj->add();
-
-    $this->assertTrue($result);
-}
-```
-
-## Failure Scenario Pattern
-
-Stub the dependency to fail and assert the method responds correctly:
+Use `logicalAnd` when a query must contain multiple predicates:
 
 ```php
-public function testSaveReturnsFalseWhenDbInsertFails(): void
-{
-    $this->dbMock
-        ->method('insert')
-        ->willReturn(false);
-
-    $obj = new RoomType();
-    $result = $obj->add();
-
-    $this->assertFalse($result);
-}
+$this->dbMock
+    ->expects($this->once())
+    ->method('executeS')
+    ->with($this->logicalAnd(
+        $this->stringContains('deleted'),
+        $this->stringContains('= 0')
+    ))
+    ->willReturn([]);
 ```
 
 ## What to Test Per Class Type

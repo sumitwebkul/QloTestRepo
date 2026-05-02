@@ -2,58 +2,47 @@
 
 QloApps classes depend on global singletons. Always mock these in setUp() — never let tests hit a real database or read real configuration.
 
-## Bootstrap Requirement
+## Bootstrap — What's Already Available
 
-The test bootstrap (`tests/bootstrap.php`) only loads the composer autoloader. QloApps core is NOT bootstrapped. This means:
-- No database connection available
-- No `_PS_ROOT_DIR_` constant defined
-- No Context, Configuration, or Db instances
+`tests/bootstrap.php` sets up the full test environment before any test runs:
 
-You must define required constants and mock required classes before instantiating the class under test.
+- `_PS_ROOT_DIR_`, `_DB_PREFIX_`, `_PS_USE_SQL_SLAVE_` constants are defined
+- All QloApps path constants (`_PS_CLASS_DIR_`, `_PS_CONFIG_DIR_`, etc.) from `config/defines.inc.php`
+- `pSQL()` and `bqSQL()` functions from `config/alias.php`
+- All core stubs from `tests/Unit/stubs/CoreStubs.php` (Db, ObjectModel, Context, Configuration, Tools, Shop, Cache, and domain stubs)
+- QloApps autoloader registered via `config/autoload.php` — real classes load automatically
 
-## Define Required Constants
-
-Add to setUp() or at the top of the test class:
-
-```php
-protected function setUp(): void
-{
-    if (!defined('_DB_PREFIX_')) {
-        define('_DB_PREFIX_', 'ps_');
-    }
-    if (!defined('_PS_ROOT_DIR_')) {
-        define('_PS_ROOT_DIR_', dirname(__DIR__, 2));
-    }
-}
-```
+**Do NOT** define constants or require files in individual test files. Everything is already available.
 
 ## Mock Db::getInstance()
 
-Use PHPUnit's `createMock()` to replace the Db singleton:
+Use PHPUnit's `createMock()` to replace the Db singleton. Always configure `escape()` to pass through — `pSQL()` calls `Db::escape()` and SQL assertions will fail if it returns null.
 
 ```php
-use PHPUnit\Framework\TestCase;
-
 class SomeTest extends TestCase
 {
     private $dbMock;
 
     protected function setUp(): void
     {
-        $this->dbMock = $this->createMock(Db::class);
+        parent::setUp();
 
-        // Inject mock into Db singleton
-        $reflection = new ReflectionProperty(Db::class, 'instance');
-        $reflection->setAccessible(true);
-        $reflection->setValue(null, $this->dbMock);
+        $this->dbMock = $this->createMock(Db::class);
+        // pSQL() calls Db::escape() — pass through so SQL strings contain real values
+        $this->dbMock->method('escape')->willReturnArgument(0);
+
+        $ref = new ReflectionProperty(Db::class, 'instance');
+        $ref->setAccessible(true);
+        $ref->setValue(null, $this->dbMock);
     }
 
     protected function tearDown(): void
     {
-        // Reset Db singleton after each test
-        $reflection = new ReflectionProperty(Db::class, 'instance');
-        $reflection->setAccessible(true);
-        $reflection->setValue(null, null);
+        $ref = new ReflectionProperty(Db::class, 'instance');
+        $ref->setAccessible(true);
+        $ref->setValue(null, null);
+
+        parent::tearDown();
     }
 }
 ```
@@ -61,24 +50,10 @@ class SomeTest extends TestCase
 Stub query results:
 
 ```php
-$this->dbMock
-    ->method('getRow')
-    ->willReturn(['id_address' => 1, 'alias' => 'Home']);
-
-$this->dbMock
-    ->method('executeS')
-    ->willReturn([
-        ['id_tag' => 1, 'name' => 'wifi'],
-        ['id_tag' => 2, 'name' => 'pool'],
-    ]);
-
-$this->dbMock
-    ->method('insert')
-    ->willReturn(true);
-
-$this->dbMock
-    ->method('getValue')
-    ->willReturn('42');
+$this->dbMock->method('getRow')->willReturn(['id_address' => 1, 'alias' => 'Home']);
+$this->dbMock->method('executeS')->willReturn([['id_tag' => 1, 'name' => 'wifi']]);
+$this->dbMock->method('insert')->willReturn(true);
+$this->dbMock->method('getValue')->willReturn('42');
 ```
 
 ## Mock Context::getContext()
@@ -86,117 +61,142 @@ $this->dbMock
 ```php
 protected function setUpContext(): void
 {
-    $languageMock = $this->createMock(Language::class);
-    $languageMock->id = 1;
-    $languageMock->iso_code = 'en';
-
-    $shopMock = $this->createMock(Shop::class);
-    $shopMock->id = 1;
-
     $contextMock = $this->createMock(Context::class);
-    $contextMock->language = $languageMock;
-    $contextMock->shop = $shopMock;
+    $contextMock->shop = (object)['id' => 1];
+    $contextMock->language = (object)['id' => 1, 'iso_code' => 'en'];
 
-    // Replace Context singleton
-    $reflection = new ReflectionProperty(Context::class, 'instance');
-    $reflection->setAccessible(true);
-    $reflection->setValue(null, $contextMock);
+    $ref = new ReflectionProperty(Context::class, 'instance');
+    $ref->setAccessible(true);
+    $ref->setValue(null, $contextMock);
 }
 ```
 
-## Mock Configuration::get()
-
-Configuration uses a static cache. Use a map stub:
+Reset in tearDown:
 
 ```php
-// Simple approach: use a value map
-$this->getMockBuilder(Configuration::class)
-    ->disableOriginalConstructor()
-    ->getMock();
+$ref = new ReflectionProperty(Context::class, 'instance');
+$ref->setAccessible(true);
+$ref->setValue(null, null);
+```
 
-// Or stub individual calls using a callback
-// Note: Configuration::get() is static, use runkit or override class in test
-// Simplest: define constants that Configuration falls back to, or
-// use Reflection to inject into Configuration::$_cache
+## Configuration stub
 
-protected function setConfigValue(string $key, $value): void
+The `Configuration` stub in `CoreStubs.php` is an in-memory key-value store. Use `set()` in setUp and `resetAll()` in tearDown:
+
+```php
+protected function setUp(): void
 {
-    $cache = &Configuration::$_cache;  // if accessible
-    $cache[$key][0] = $value;          // shop_id 0 = global
+    Configuration::set('PS_LANG_DEFAULT', 1);
+    Configuration::set('PS_CUSTOMER_GROUP', 3);
+}
+
+protected function tearDown(): void
+{
+    Configuration::resetAll();
 }
 ```
 
-## Mock Static Methods (Tools, Validate)
+## Configurable Stub Flags
 
-PHPUnit cannot mock static methods directly. Options:
+`CoreStubs.php` exposes static flags to simulate failure states without creating per-test subclasses.
 
-**Option 1 — Test the static method directly (preferred for pure functions):**
+**ObjectModel::$updateResult** — controls what `update()` returns:
+
 ```php
-// Validate and Tools are pure utility classes — call them directly
-$this->assertTrue(Validate::isEmail('user@example.com'));
+// Make update() fail for this test
+ObjectModel::$updateResult = false;
+$result = $obj->someMethodThatCallsUpdate();
+$this->assertFalse($result);
 ```
 
-**Option 2 — Override in test namespace (advanced):**
-Create a subclass that overrides the static method for testing:
+**Group::setFeatureActive()** — controls the `isFeatureActive()` branch:
+
 ```php
-class TestableTools extends Tools
+Group::setFeatureActive(false);
+$result = Customer::getGroupsStatic(1); // takes the !isFeatureActive() branch
+```
+
+Always reset both in tearDown:
+
+```php
+protected function tearDown(): void
 {
-    public static function getValue($key, $defaultValue = false)
-    {
-        return static::$testValues[$key] ?? $defaultValue;
-    }
-    public static array $testValues = [];
+    ObjectModel::$updateResult = true;
+    Group::setFeatureActive(true);
+    // ... other resets
 }
 ```
 
 ## Verifying DB Calls Were Made
 
-Don't just stub — assert the method actually called Db with the right arguments:
+Don't just stub — assert the method actually called Db with the right arguments. For SQL string assertions, use `logicalAnd` when multiple predicates must be present:
 
 ```php
-// Assert insert is called exactly once with the right table
-$this->dbMock
-    ->expects($this->once())
-    ->method('insert')
-    ->with(
-        $this->equalTo('ps_htl_room_type'),
-        $this->arrayHasKey('name')
-    )
-    ->willReturn(true);
-
-// Assert executeS is called with a SQL string matching a pattern
+// Single predicate
 $this->dbMock
     ->expects($this->once())
     ->method('executeS')
     ->with($this->stringContains('WHERE id_hotel ='))
-    ->willReturn([['id_room' => 1]]);
+    ->willReturn([]);
+
+// Multiple predicates — use logicalAnd
+$this->dbMock
+    ->expects($this->once())
+    ->method('getValue')
+    ->with($this->logicalAnd(
+        $this->stringContains('email'),
+        $this->stringContains('user@example.com')
+    ))
+    ->willReturn(false);
+
+// Verify column and value together
+$this->dbMock
+    ->expects($this->once())
+    ->method('executeS')
+    ->with($this->logicalAnd(
+        $this->stringContains('active'),
+        $this->stringContains('= 1')
+    ))
+    ->willReturn([]);
+```
+
+## Password Assertions
+
+Never assert `md5(...)` directly — that couples the test to the stub implementation. Always use `Tools::encrypt()` so the test remains correct if the hashing algorithm changes:
+
+```php
+// Wrong — coupled to stub implementation
+$this->assertSame(md5('secret'), $customer->passwd);
+
+// Correct — coupled to the class contract
+$this->assertSame(Tools::encrypt('secret'), $customer->passwd);
+```
+
+The same applies when setting up test fixtures:
+
+```php
+// Wrong
+$customer->passwd = md5('oldpass');
+
+// Correct
+$customer->passwd = Tools::encrypt('oldpass');
 ```
 
 ## Simulating Dependency Failures
 
-Always write one test where the dependency returns a failure value:
-
 ```php
-// DB insert fails
 $this->dbMock->method('insert')->willReturn(false);
-
-// DB query returns empty
 $this->dbMock->method('executeS')->willReturn([]);
-
-// DB throws exception
-$this->dbMock->method('getRow')
-    ->willThrowException(new PrestaShopDatabaseException('Connection lost'));
-
-// DB delete fails
+$this->dbMock->method('getRow')->willThrowException(new PrestaShopDatabaseException('Connection lost'));
 $this->dbMock->method('delete')->willReturn(false);
 ```
 
-## Mocking Payment / External HTTP Services
+## External Service Responses
 
-For classes that call payment gateways or external APIs via a service object:
+For classes that call payment gateways, external APIs, or mail services via an injected dependency, mock the service and assert both success and failure paths:
 
 ```php
-// Inject a mock via constructor or setter
+// Inject mock via constructor or setter
 $paymentMock = $this->createMock(PaymentGateway::class);
 $paymentMock
     ->expects($this->once())
@@ -209,50 +209,59 @@ $result = $service->processPayment(150.00);
 
 $this->assertSame('TXN123', $result['transaction_id']);
 
-// Failure case
-$paymentMock->method('charge')->willReturn(['status' => 'failed', 'error' => 'Insufficient funds']);
+// Failure case — service returns error
+$paymentMock->method('charge')
+    ->willReturn(['status' => 'failed', 'error' => 'Insufficient funds']);
 $result = $service->processPayment(150.00);
 $this->assertFalse($result['success']);
 ```
 
-## Permission / Access Control Mocking
+For `Mail::Send()` — stub the Mail class in `CoreStubs.php` (already done); verify it is called:
 
-For methods that check employee permissions:
+```php
+// If Mail is injected or called statically, assert it was triggered
+$this->dbMock->method('insert')->willReturn(true);
+// Mail::Send is stubbed in CoreStubs — it returns true silently
+$result = $customer->transformToCustomer(1, 'validpass');
+$this->assertTrue($result); // confirms the Mail::Send path was reached
+```
+
+## Tautological Assertions
+
+Never write `assertTrue(true)` — it proves nothing. For tests that only verify no exception is thrown, use:
+
+```php
+// Wrong
+$obj->someMethod();
+$this->assertTrue(true);
+
+// Correct
+$this->expectNotToPerformAssertions();
+$obj->someMethod();
+```
+
+## Static Methods (Tools, Validate)
+
+PHPUnit cannot mock static methods directly. For `Validate` (pure utility, loaded from the real `classes/Validate.php`) and `Tools` (stub in CoreStubs.php) — call them directly:
+
+```php
+$this->assertTrue(Validate::isEmail('user@example.com'));
+$this->assertFalse(Validate::isPasswd('ab'));
+```
+
+## Permission / Access Control Mocking
 
 ```php
 protected function setUpEmployeeWithAccess(bool $hasAccess): void
 {
     $employeeMock = $this->createMock(Employee::class);
     $employeeMock->method('hasAccess')->willReturn($hasAccess);
-    $employeeMock->id = 1;
-    $employeeMock->id_profile = $hasAccess ? 1 : 2;
 
     $contextMock = $this->createMock(Context::class);
     $contextMock->employee = $employeeMock;
 
-    $reflection = new ReflectionProperty(Context::class, 'instance');
-    $reflection->setAccessible(true);
-    $reflection->setValue(null, $contextMock);
-}
-
-// Usage
-public function testActionAllowedWhenEmployeeHasPermission(): void
-{
-    $this->setUpEmployeeWithAccess(true);
-    $result = $this->subject->performRestrictedAction();
-    $this->assertTrue($result);
-}
-
-public function testActionDeniedWhenEmployeeLacksPermission(): void
-{
-    $this->setUpEmployeeWithAccess(false);
-    $result = $this->subject->performRestrictedAction();
-    $this->assertFalse($result);
+    $ref = new ReflectionProperty(Context::class, 'instance');
+    $ref->setAccessible(true);
+    $ref->setValue(null, $contextMock);
 }
 ```
-
-## When NOT to Mock
-
-- `Validate` — pure static methods, test directly without mocking
-- `Tools` string utilities (`strtolower`, `substr`, etc.) — test directly
-- Simple value objects with no external dependencies — instantiate directly

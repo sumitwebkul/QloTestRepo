@@ -1,6 +1,6 @@
 # Testing ObjectModel Subclasses in QloApps
 
-ObjectModel subclasses (Address, Tag, Cart, etc.) have a standard structure. Unit tests for these focus on the definition, validation, and logic methods — not on CRUD (which requires a real DB and belongs to integration tests).
+ObjectModel subclasses (Customer, Address, Cart, etc.) have a standard structure. Unit tests for these focus on the definition, validation, and logic methods — not on CRUD (which requires a real DB and belongs to integration tests).
 
 ## What to Test in an ObjectModel
 
@@ -43,9 +43,7 @@ public function testDefinitionFieldsHaveValidTypes(): void
 ```php
 public function testConstructorSetsDefaultValues(): void
 {
-    // Requires Db mock (parent::__construct calls Db if $id is set)
     $tag = new Tag();  // no ID = no DB call
-
     $this->assertNull($tag->id);
     $this->assertNull($tag->name);
 }
@@ -53,17 +51,12 @@ public function testConstructorSetsDefaultValues(): void
 
 ## Testing a Custom Static Method (with Db mock)
 
-Example: `Tag::getProductTags($id_product, $id_lang)`
-
 ```php
 public function testGetProductTagsReturnsTagNames(): void
 {
     $this->dbMock
         ->method('executeS')
-        ->willReturn([
-            ['name' => 'wifi'],
-            ['name' => 'pool'],
-        ]);
+        ->willReturn([['name' => 'wifi'], ['name' => 'pool']]);
 
     $result = Tag::getProductTags(1, 1);
 
@@ -73,19 +66,15 @@ public function testGetProductTagsReturnsTagNames(): void
 
 public function testGetProductTagsReturnsEmptyArrayWhenNoneFound(): void
 {
-    $this->dbMock
-        ->method('executeS')
-        ->willReturn([]);
-
+    $this->dbMock->method('executeS')->willReturn([]);
     $result = Tag::getProductTags(99, 1);
-
     $this->assertSame([], $result);
 }
 ```
 
 ## Testing Field Validation Rules
 
-Cross-check each field's `validate` rule:
+Use the real `Validate` class (loaded from `classes/Validate.php` via autoloader — no stub needed):
 
 ```php
 /**
@@ -99,56 +88,49 @@ public function testTagNameValidation(string $name, bool $isValid): void
 public function provideNameValidation(): array
 {
     return [
-        'valid name'        => ['wifi', true],
-        'valid with space'  => ['free wifi', true],
-        'empty string'      => ['', false],
-        'too long (33)'     => [str_repeat('a', 33), false],
-        'with HTML'         => ['<b>tag</b>', false],
+        'valid name'       => ['wifi', true],
+        'valid with space' => ['free wifi', true],
+        'empty string'     => ['', false],
+        'with HTML'        => ['<b>tag</b>', false],
     ];
 }
 ```
 
 ## Testing Business Logic (QloApps Domain)
 
-For hotel/room pricing, availability, tax, commission, and date-range methods — use known inputs and hand-computed expected outputs:
-
 ```php
 public function testGetRoomPriceWithTaxApplied(): void
 {
     $room = new HtlRoomType();
     $room->price = 200.00;
-    $room->tax_rate = 0.12;  // 12%
-
-    $result = $room->getPriceWithTax();
-
-    $this->assertSame(224.00, $result);  // 200 * 1.12 = 224
-}
-
-public function testGetAvailableRoomsExcludesBookedDates(): void
-{
-    $this->dbMock
-        ->method('executeS')
-        ->willReturn([['id_room' => 3], ['id_room' => 7]]);
-
-    $ids = HtlRoomType::getAvailableRoomIds(1, '2024-06-01', '2024-06-05');
-
-    $this->assertNotContains(3, $ids);  // room 3 is booked
-}
-
-public function testCommissionCalculationForPartner(): void
-{
-    $booking = new HtlBookingDetail();
-    $booking->total_price = 500.00;
-    $booking->commission_rate = 0.15;  // 15%
-
-    $this->assertSame(75.00, $booking->getCommissionAmount());
-    $this->assertSame(425.00, $booking->getNetAmount());
+    $room->tax_rate = 0.12;
+    $this->assertSame(224.00, $room->getPriceWithTax());
 }
 ```
 
+## Testing update() Failure Branch
+
+`ObjectModel::$updateResult` in `CoreStubs.php` controls what the stub `update()` returns. Use it to test branches that depend on update success/failure:
+
+```php
+public function testSomeMethodReturnsFalseWhenUpdateFails(): void
+{
+    $this->dbMock->method('delete')->willReturn(true);
+    $this->dbMock->method('insert')->willReturn(true);
+    ObjectModel::$updateResult = false;
+
+    $obj = new SomeModel();
+    $obj->active = 1;
+
+    $this->assertFalse($obj->someMethodThatCallsUpdate());
+}
+```
+
+Always reset in tearDown: `ObjectModel::$updateResult = true;`
+
 ## Testing State Mutations
 
-After calling a method that changes object state, assert the changed properties:
+After calling a method that changes object state, assert the changed properties directly:
 
 ```php
 public function testAddSetsIdAfterInsert(): void
@@ -163,14 +145,18 @@ public function testAddSetsIdAfterInsert(): void
     $this->assertSame(42, (int) $tag->id);
 }
 
-public function testDeleteSetsIdToNull(): void
+public function testTransformToCustomerSetsIsGuestToZero(): void
 {
     $this->dbMock->method('delete')->willReturn(true);
+    $this->dbMock->method('insert')->willReturn(true);
 
-    $tag = new Tag(1);
-    $tag->delete();
+    $customer = new Customer();
+    $customer->is_guest = 1;
+    $customer->id = 5;
 
-    $this->assertNull($tag->id);
+    $customer->transformToCustomer(1, 'validpass');
+
+    $this->assertSame(0, $customer->is_guest);
 }
 ```
 
@@ -178,6 +164,16 @@ public function testDeleteSetsIdToNull(): void
 
 ```php
 <?php
+/**
+ * NOTICE OF LICENSE
+ *
+ * This source file is subject to the Open Software License version 3.0
+ * that is bundled with this package in the file LICENSE.md
+ *
+ * @author    Webkul IN
+ * @copyright Since 2010 Webkul
+ * @license   https://opensource.org/license/osl-3-0-php Open Software License version 3.0
+ */
 
 use PHPUnit\Framework\TestCase;
 
@@ -187,22 +183,27 @@ class TagTest extends TestCase
 
     protected function setUp(): void
     {
-        if (!defined('_DB_PREFIX_')) {
-            define('_DB_PREFIX_', 'ps_');
-        }
+        parent::setUp();
 
         $this->dbMock = $this->createMock(Db::class);
-
-        $reflection = new ReflectionProperty(Db::class, 'instance');
-        $reflection->setAccessible(true);
-        $reflection->setValue(null, $this->dbMock);
+        $this->dbMock->method('escape')->willReturnArgument(0);
+        $ref = new ReflectionProperty(Db::class, 'instance');
+        $ref->setAccessible(true);
+        $ref->setValue(null, $this->dbMock);
     }
 
     protected function tearDown(): void
     {
-        $reflection = new ReflectionProperty(Db::class, 'instance');
-        $reflection->setAccessible(true);
-        $reflection->setValue(null, null);
+        $ref = new ReflectionProperty(Db::class, 'instance');
+        $ref->setAccessible(true);
+        $ref->setValue(null, null);
+
+        ObjectModel::$updateResult = true;
+        Group::setFeatureActive(true);
+        Configuration::resetAll();
+        Cache::resetAll();
+
+        parent::tearDown();
     }
 
     public function testDefinitionTableIsTag(): void
@@ -232,9 +233,9 @@ class TagTest extends TestCase
     public function provideNameValidation(): array
     {
         return [
-            'valid'     => ['wifi', true],
-            'empty'     => ['', false],
-            'too long'  => [str_repeat('x', 33), false],
+            'valid'    => ['wifi', true],
+            'empty'    => ['', false],
+            'with HTML'=> ['<b>bad</b>', false],
         ];
     }
 }
