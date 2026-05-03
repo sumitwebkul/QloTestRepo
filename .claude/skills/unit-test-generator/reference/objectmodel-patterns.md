@@ -40,12 +40,19 @@ public function testDefinitionFieldsHaveValidTypes(): void
 
 ## Testing Constructor Defaults
 
+Test both the no-ID and with-ID forms. The no-ID form checks defaults; the with-ID form verifies the ID is retained (the stub `ObjectModel::__construct` sets `$this->id = $id`):
+
 ```php
-public function testConstructorSetsDefaultValues(): void
+public function testConstructorWithNoIdSetsNullId(): void
 {
-    $tag = new Tag();  // no ID = no DB call
+    $tag = new Tag();
     $this->assertNull($tag->id);
-    $this->assertNull($tag->name);
+}
+
+public function testConstructorWithIdRetainsId(): void
+{
+    $tag = new Tag(42);
+    $this->assertSame(42, $tag->id);
 }
 ```
 
@@ -77,15 +84,15 @@ public function testGetProductTagsReturnsEmptyArrayWhenNoneFound(): void
 Use the real `Validate` class (loaded from `classes/Validate.php` via autoloader — no stub needed):
 
 ```php
-/**
- * @dataProvider provideNameValidation
- */
+use PHPUnit\Framework\Attributes\DataProvider;
+
+#[DataProvider('provideNameValidation')]
 public function testTagNameValidation(string $name, bool $isValid): void
 {
     $this->assertSame($isValid, Validate::isGenericName($name));
 }
 
-public function provideNameValidation(): array
+public static function provideNameValidation(): array
 {
     return [
         'valid name'       => ['wifi', true],
@@ -98,13 +105,23 @@ public function provideNameValidation(): array
 
 ## Testing Business Logic (QloApps Domain)
 
+Use `assertEqualsWithDelta()` for all float/price results — never `assertSame()`. In QloApps, tax rates are stored as percentages (12 = 12%), not decimals (0.12):
+
 ```php
 public function testGetRoomPriceWithTaxApplied(): void
 {
     $room = new HtlRoomType();
     $room->price = 200.00;
-    $room->tax_rate = 0.12;
-    $this->assertSame(224.00, $room->getPriceWithTax());
+    $room->tax_rate = 12; // 12% stored as integer percentage
+    $this->assertEqualsWithDelta(224.00, $room->getPriceWithTax(), 0.001);
+}
+
+public function testGetRoomPriceWithZeroTax(): void
+{
+    $room = new HtlRoomType();
+    $room->price = 200.00;
+    $room->tax_rate = 0;
+    $this->assertEqualsWithDelta(200.00, $room->getPriceWithTax(), 0.001);
 }
 ```
 
@@ -130,7 +147,9 @@ Always reset in tearDown: `ObjectModel::$updateResult = true;`
 
 ## Testing State Mutations
 
-After calling a method that changes object state, assert the changed properties directly:
+After calling a method that changes object state, assert the changed properties directly.
+
+The stub `ObjectModel::add()` calls `Db::getInstance()->Insert_ID()` and sets `$this->id`. Stub `Insert_ID()` to control what ID is assigned:
 
 ```php
 public function testAddSetsIdAfterInsert(): void
@@ -142,9 +161,11 @@ public function testAddSetsIdAfterInsert(): void
     $tag->name = 'wifi';
     $tag->add();
 
-    $this->assertSame(42, (int) $tag->id);
+    $this->assertSame(42, $tag->id);
 }
+```
 
+```php
 public function testTransformToCustomerSetsIsGuestToZero(): void
 {
     $this->dbMock->method('delete')->willReturn(true);
@@ -175,6 +196,7 @@ public function testTransformToCustomerSetsIsGuestToZero(): void
  * @license   https://opensource.org/license/osl-3-0-php Open Software License version 3.0
  */
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class TagTest extends TestCase
@@ -222,20 +244,18 @@ class TagTest extends TestCase
         $this->assertNull($tag->id);
     }
 
-    /**
-     * @dataProvider provideNameValidation
-     */
+    #[DataProvider('provideNameValidation')]
     public function testNameFieldValidation(string $name, bool $expected): void
     {
         $this->assertSame($expected, Validate::isGenericName($name));
     }
 
-    public function provideNameValidation(): array
+    public static function provideNameValidation(): array
     {
         return [
-            'valid'    => ['wifi', true],
-            'empty'    => ['', false],
-            'with HTML'=> ['<b>bad</b>', false],
+            'valid'     => ['wifi', true],
+            'empty'     => ['', false],
+            'with HTML' => ['<b>bad</b>', false],
         ];
     }
 }

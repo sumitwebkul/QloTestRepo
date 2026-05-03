@@ -48,7 +48,7 @@ if (!class_exists('ObjectModel')) {
         public static bool $updateResult = true;
 
         public function __construct($id = null) { $this->id = $id; }
-        public function add($autodate = true, $null_values = true) { return true; }
+        public function add($autodate = true, $null_values = true) { $this->id = (int) Db::getInstance()->Insert_ID(); return true; }
         public function update($null_values = false) { return static::$updateResult; }
         public function delete() { return true; }
         public function save() { return true; }
@@ -130,6 +130,29 @@ if (!class_exists('Configuration')) {
             static::$values[$key] = $value;
         }
 
+        public static function getMultiple(array $keys, $id_lang = null, $id_shop_group = null, $id_shop = null): array
+        {
+            $result = [];
+            foreach ($keys as $key) {
+                if (array_key_exists($key, static::$values)) {
+                    $result[$key] = static::$values[$key];
+                }
+            }
+            return $result;
+        }
+
+        public static function updateValue(string $key, $value, bool $html = false, $id_shop_group = null, $id_shop = null): bool
+        {
+            static::$values[$key] = $value;
+            return true;
+        }
+
+        public static function deleteByName(string $key): bool
+        {
+            unset(static::$values[$key]);
+            return true;
+        }
+
         public static function resetAll(): void
         {
             static::$values = [];
@@ -153,6 +176,13 @@ if (!class_exists('Tools')) {
             if (null === $str || is_array($str)) { return false; }
             return function_exists('mb_strlen') ? mb_strlen(html_entity_decode($str, ENT_COMPAT, 'UTF-8'), $encoding) : strlen($str);
         }
+
+        public static function getValue(string $key, $default = false): mixed { return $default; }
+        public static function isSubmit(string $key): bool { return false; }
+        public static function getShopDomainSsl(bool $http = false, bool $entities = false): string { return 'https://example.com'; }
+        public static function getAdminTokenLite(string $tab): string { return 'testtoken'; }
+        public static function displayPrice(float $price, $currency = null, bool $no_utf8 = true): string { return number_format($price, 2); }
+        public static function nl2br(string $str): string { return nl2br($str); }
     }
 }
 
@@ -233,6 +263,7 @@ if (!class_exists('Cart')) {
     class Cart
     {
         public int $id = 0;
+        public int $id_currency = 0;
         public function __construct(int $id = 0) { $this->id = $id; }
         public static function getCustomerCarts(int $id_customer, bool $with_order = true): array { return []; }
         public function nbProducts(): int { return 0; }
@@ -250,6 +281,133 @@ if (!class_exists('Mail')) {
 if (!class_exists('Hook')) {
     class Hook
     {
-        public static function exec(string $hook_name, array $hook_args = []): string { return ''; }
+        public static string $hookReturn = '';
+
+        public static function exec(string $hook_name, array $hook_args = []): string
+        {
+            return static::$hookReturn;
+        }
+    }
+}
+
+// ── Module / PaymentModule ────────────────────────────────────────────────────
+// Real ModuleCore pulls DB, translation files, Smarty, Context, and HTTP.
+// This stub supplies the minimum surface area for unit-testing module logic:
+// install/uninstall branching, hook handlers, getContent, and configuration.
+if (!class_exists('Module')) {
+    class Module
+    {
+        public ?int $id = null;
+        public string $name = '';
+        public string $tab = '';
+        public string $version = '';
+        public string $author = '';
+        public array $controllers = [];
+        public bool $bootstrap = false;
+        public bool $active = true;
+        public string $displayName = '';
+        public string $description = '';
+        public string $confirmUninstall = '';
+        public string $warning = '';
+        public string $_path = '/modules/test/';
+        public string $local_path = '/modules/test/';
+        public string $identifier = '';
+        public string $table = '';
+        public $smarty = null;
+        public $context = null;
+
+        public function __construct()
+        {
+            $this->context = Context::getContext();
+        }
+
+        public function install(): bool { return true; }
+        public function uninstall(): bool { return true; }
+        public function registerHook(string $hook_name): bool { return true; }
+        public function unregisterHook(string $hook_name): bool { return true; }
+        public function l(string $string, string $specific = ''): string { return $string; }
+        public function display(string $file, string $template): string { return ''; }
+        public function displayError(string $message): string { return '<p class="error">'.$message.'</p>'; }
+        public function displayConfirmation(string $message): string { return '<p class="conf">'.$message.'</p>'; }
+        public function getCurrency(int $id_currency): array|false { return []; }
+        public function addTab(array $tab): bool { return true; }
+        public function removeTab(string $class_name): bool { return true; }
+    }
+}
+
+if (!class_exists('PaymentModule')) {
+    class PaymentModule extends Module
+    {
+        public bool $currencies = true;
+        public string $currencies_mode = 'checkbox';
+        public int $payment_type = 0;
+
+        public function checkCurrency($cart): bool { return true; }
+        public function execPayment($cart): void {}
+    }
+}
+
+// ── Currency ──────────────────────────────────────────────────────────────────
+if (!class_exists('Currency')) {
+    class Currency
+    {
+        public int $id = 1;
+        public string $iso_code = 'USD';
+        public string $sign = '$';
+        public function __construct(int $id = 1) { $this->id = $id; }
+        public static function checkPaymentCurrencies(int $id_module): array { return [['id_currency' => 1]]; }
+    }
+}
+
+// ── Language ──────────────────────────────────────────────────────────────────
+if (!class_exists('Language')) {
+    class Language
+    {
+        public int $id = 1;
+        public string $iso_code = 'en';
+        public function __construct(int $id = 1) { $this->id = $id; }
+    }
+}
+
+// ── Media ─────────────────────────────────────────────────────────────────────
+if (!class_exists('Media')) {
+    class Media
+    {
+        public static function getMediaPath(string $path): string { return $path; }
+    }
+}
+
+// ── OrderPayment ──────────────────────────────────────────────────────────────
+if (!class_exists('OrderPayment')) {
+    class OrderPayment
+    {
+        const PAYMENT_TYPE_REMOTE_PAYMENT = 1;
+    }
+}
+
+// ── OrderState ────────────────────────────────────────────────────────────────
+if (!class_exists('OrderState')) {
+    class OrderState
+    {
+        public bool $logable = false;
+        public function __construct(int $id = 0) {}
+    }
+}
+
+// ── HelperForm ────────────────────────────────────────────────────────────────
+if (!class_exists('HelperForm')) {
+    class HelperForm
+    {
+        public bool $show_toolbar = false;
+        public string $table = '';
+        public int $default_form_language = 1;
+        public int $allow_employee_form_lang = 0;
+        public int $id = 0;
+        public string $identifier = '';
+        public string $submit_action = '';
+        public string $currentIndex = '';
+        public string $token = '';
+        public array $tpl_vars = [];
+        public function generateForm(array $fields_form): string { return '<form></form>'; }
     }
 }
