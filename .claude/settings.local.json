@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(php -d display_errors=1 -r ' *)",
+      "Bash(echo \"EXIT: $?\")"
+    ]
+  }
+}

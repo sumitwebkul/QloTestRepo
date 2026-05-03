@@ -91,6 +91,22 @@ if (!class_exists('Db')) {
     }
 }
 
+// ── DbQuery ───────────────────────────────────────────────────────────────────
+// Real DbQuery builds SQL strings via a fluent interface. This stub returns a
+// fixed query string from build() so getValue() can be called normally in tests.
+if (!class_exists('DbQuery')) {
+    class DbQuery
+    {
+        public function select(string $fields): static { return $this; }
+        public function from(string $table, ?string $alias = null): static { return $this; }
+        public function leftJoin(string $table, ?string $alias = null, ?string $on = null): static { return $this; }
+        public function where(string $restriction): static { return $this; }
+        public function groupBy(string $fields): static { return $this; }
+        public function orderBy(string $fields): static { return $this; }
+        public function build(): string { return 'SELECT 1'; }
+    }
+}
+
 // ── Context ────────────────────────────────────────────────────────────────��──
 // Real ContextCore requires mobile_detect lib, cookie, shop, cart objects.
 if (!class_exists('Context')) {

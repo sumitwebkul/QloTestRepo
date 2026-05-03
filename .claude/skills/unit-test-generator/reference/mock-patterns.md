@@ -23,6 +23,38 @@ if (!defined('_PS_IN_TEST_') || !_PS_IN_TEST_) {
 }
 ```
 
+## PHP Method Name Case-Insensitivity Trap
+
+**Critical:** PHP normalises all method names to lowercase in its internal dispatch table. This means `executeS` and `executes` are **the same method** as far as PHP is concerned.
+
+**Symptom:** `Fatal error: Cannot redeclare Db::executes()` — even though you only see one definition in the file.
+
+**Root cause:** You added a new stub method (e.g., `executes`) whose lowercase form collides with an existing one (e.g., `executeS`). PHP compiles them to the same slot.
+
+**How it surfaces in QloApps:** Some QloApps methods call `Db::getInstance()->executes(...)` (all lowercase 's') — this looks like a typo in the QloApps source but it is valid PHP. The call resolves to whichever method is registered under `executes` in the dispatch table, which is the existing `executeS` stub.
+
+**Rule:** Never add a Db stub method whose lowercase form matches an existing one. When QloApps calls `Db::executes()`, mock with `method('executeS')` — no new stub entry needed:
+
+```php
+// WRONG — causes Fatal error: Cannot redeclare Db::executes()
+class Db {
+    public function executeS($sql) { ... }
+    public function executes($sql) { ... }  // ← collides with executeS
+}
+
+// CORRECT — PHP case-insensitivity means one stub covers both call forms
+class Db {
+    public function executeS($sql) { ... }  // handles Db::executes() calls too
+}
+
+// In test: mock executeS to cover Customer::delete() which calls $db->executes(...)
+$this->dbMock->method('executeS')->willReturn([]);
+```
+
+**Related warning:** When `executeS()` is not explicitly configured in a mock, PHPUnit returns `null` by default. Any `foreach(null as ...)` in the class under test emits a PHP warning, which `failOnWarning=true` in phpunit.xml converts to a test failure. Always add `$this->dbMock->method('executeS')->willReturn([])` in tests that invoke methods which iterate over `executeS` results (especially `delete()` and other cleanup methods).
+
+---
+
 ## createStub() vs createMock()
 
 PHPUnit 10+ provides two distinct test double creation methods:
@@ -104,13 +136,15 @@ Only set up Context when the class under test actually calls `Context::getContex
 ```php
 protected function setUpContext(): void
 {
-    $contextMock = $this->createMock(Context::class);
-    $contextMock->shop = (object)['id' => 1];
-    $contextMock->language = (object)['id' => 1, 'iso_code' => 'en'];
+    $ctx = new Context();
+    // Use anonymous classes, not (object)[...] casts — PHP 8.1 deprecates
+    // dynamic properties on stdClass, which fails when failOnWarning=true.
+    $ctx->shop = new class { public int $id = 1; public int $id_shop_group = 1; };
+    $ctx->language = new class { public int $id = 1; public string $iso_code = 'en'; };
 
     $ref = new ReflectionProperty(Context::class, 'instance');
     $ref->setAccessible(true);
-    $ref->setValue(null, $contextMock);
+    $ref->setValue(null, $ctx);
 }
 ```
 

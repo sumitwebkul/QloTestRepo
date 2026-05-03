@@ -52,7 +52,7 @@ Then write the test file to `tests/Unit/$ARGUMENTSTest.php` following those patt
 | Class with date/time logic | advanced-patterns.md | Fixed timestamps, `strtotime()` with known inputs |
 | Class calling `Hook::exec()` with return | advanced-patterns.md | Stub Hook return value, test conditional branches |
 
-- Use `PHPUnit\Framework\TestCase`; import attributes with `use PHPUnit\Framework\Attributes\DataProvider;` etc.
+- Use `PHPUnit\Framework\TestCase`; import attributes with `use PHPUnit\Framework\Attributes\DataProvider;` etc. **Only import attributes that are actually used in the file** — unused imports (`DoesNotPerformAssertions`, `TestWith`, etc.) must be removed before writing the file.
 - Add OSL-3.0 license header
 - Test method naming: `test{MethodName}{Scenario}`
 - Coverage per method is governed by the 12-point checklist below — not a fixed count
@@ -129,6 +129,8 @@ To debug a single failing test without re-running the full suite:
 | `Call to undefined method` | Add missing `->method()->willReturn()` in setUp |
 | `Failed asserting that X is Y` | Re-read the class body — wrong expected value or wrong branch |
 | `Cannot redeclare constant` | Remove — constants are already defined in bootstrap.php |
+| `Cannot redeclare Db::Y()` (or any stub method) | PHP method names are **case-insensitive** internally — `executeS` and `executes` map to the same dispatch slot. Never add a stub method whose lowercase form matches an existing one. When QloApps code calls `Db::executes()` (lowercase s), mock it with `method('executeS')` — PHP resolves the call automatically, no new stub needed. |
+| `foreach(null as ...)` warning causes test failure | The Db mock's default return for unmocked methods is `null`. `executeS()` returning null triggers a PHP warning in any `foreach` loop. Add `$this->dbMock->method('executeS')->willReturn([])` in tests that exercise methods calling `executeS` internally (e.g., `delete()`). Since `failOnWarning=true` in phpunit.xml, this converts to a hard failure. |
 | `Declaration of X::method() must be compatible` | Remove or loosen return type annotations on the stub method in CoreStubs.php |
 | Static property leaking between tests | Add `ReflectionProperty` reset for the static cache in both `setUp()` and `tearDown()` |
 | `willReturnArgument is not a method` | PHPUnit version too old — check root `composer.json`, not `tests/composer.json` |

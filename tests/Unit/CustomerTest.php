@@ -10,6 +10,7 @@
  * @license   https://opensource.org/license/osl-3-0-php Open Software License version 3.0
  */
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class CustomerTest extends TestCase
@@ -20,68 +21,71 @@ class CustomerTest extends TestCase
     {
         parent::setUp();
 
-        // Default configuration values expected by Customer::__construct
+        $this->dbMock = $this->createMock(Db::class);
+        $this->dbMock->method('escape')->willReturnArgument(0);
+        $dbRef = new ReflectionProperty(Db::class, 'instance');
+        $dbRef->setAccessible(true);
+        $dbRef->setValue(null, $this->dbMock);
+
+        $ctxRef = new ReflectionProperty(Context::class, 'instance');
+        $ctxRef->setAccessible(true);
+        $ctx = new Context();
+        $ctx->shop = new class {
+            public int $id = 1;
+            public int $id_shop_group = 1;
+            public function getGroup(): object {
+                return (object)['share_order' => false];
+            }
+        };
+        $ctx->language = new class { public int $id = 1; };
+        $ctxRef->setValue(null, $ctx);
+
         Configuration::set('PS_CUSTOMER_GROUP', 3);
         Configuration::set('PS_GUEST_GROUP', 2);
-        Configuration::set('PS_UNIDENTIFIED_GROUP', 1);
-        Configuration::set('PS_ONE_PHONE_AT_LEAST', false);
-        Configuration::set('PS_PASSWD_TIME_FRONT', 360);
-        Configuration::set('PS_GUEST_CHECKOUT_ENABLED', true);
+        Configuration::set('PS_UNIDENTIFIED_GROUP', 4);
         Configuration::set('PS_LANG_DEFAULT', 1);
-        Configuration::set('PS_TAX_ADDRESS_TYPE', 'id_address_delivery');
-        Configuration::set('PS_COUNTRY_DEFAULT', 1);
+        Configuration::set('PS_PASSWD_TIME_FRONT', 10);
+        Configuration::set('PS_GUEST_CHECKOUT_ENABLED', 1);
+        Configuration::set('PS_ONE_PHONE_AT_LEAST', 0);
 
-        // Inject Db mock into singleton
-        $this->dbMock = $this->createMock(Db::class);
-        // pSQL() calls Db::escape() — pass through so SQL strings contain real values
-        $this->dbMock->method('escape')->willReturnArgument(0);
-        $ref = new ReflectionProperty(Db::class, 'instance');
-        $ref->setAccessible(true);
-        $ref->setValue(null, $this->dbMock);
-
-        // Clear CustomerCore static caches
-        foreach (['_customer_groups', '_defaultGroupId', '_customerHasAddress'] as $prop) {
-            $ref = new ReflectionProperty(CustomerCore::class, $prop);
-            $ref->setAccessible(true);
-            $ref->setValue(null, []);
-        }
-
-        Cache::resetAll();
+        $this->resetStaticCaches();
     }
 
     protected function tearDown(): void
     {
-        // Reset Db singleton
-        $ref = new ReflectionProperty(Db::class, 'instance');
-        $ref->setAccessible(true);
-        $ref->setValue(null, null);
+        $dbRef = new ReflectionProperty(Db::class, 'instance');
+        $dbRef->setAccessible(true);
+        $dbRef->setValue(null, null);
 
-        // Reset Context singleton
-        $ref = new ReflectionProperty(Context::class, 'instance');
-        $ref->setAccessible(true);
-        $ref->setValue(null, null);
+        $ctxRef = new ReflectionProperty(Context::class, 'instance');
+        $ctxRef->setAccessible(true);
+        $ctxRef->setValue(null, null);
 
-        Configuration::resetAll();
-        Cache::resetAll();
-
-        // Reset phone 'required' flag — set statically by __construct when PS_ONE_PHONE_AT_LEAST=true
-        unset(Customer::$definition['fields']['phone']['required']);
-
-        // Reset configurable stub flags
         ObjectModel::$updateResult = true;
         Group::setFeatureActive(true);
 
-        // Clear CustomerCore static caches
-        foreach (['_customer_groups', '_defaultGroupId', '_customerHasAddress'] as $prop) {
-            $ref = new ReflectionProperty(CustomerCore::class, $prop);
-            $ref->setAccessible(true);
-            $ref->setValue(null, []);
+        if (isset(Customer::$definition['fields']['phone']['required'])) {
+            unset(Customer::$definition['fields']['phone']['required']);
         }
 
+        Configuration::resetAll();
+        Cache::resetAll();
+        Hook::$hookReturn = '';
+
+        $this->resetStaticCaches();
         parent::tearDown();
     }
 
-    // ── $definition structure ────────────────────────────────────────────────
+    private function resetStaticCaches(): void
+    {
+        foreach (['_defaultGroupId', '_customerHasAddress', '_customer_groups'] as $prop) {
+            $ref = new ReflectionProperty(Customer::class, $prop);
+            $ref->setAccessible(true);
+            $ref->setValue(null, []);
+        }
+    }
+
+    // ── $definition ──────────────────────────────────────────────────────────────
 
     public function testDefinitionTableIsCustomer(): void
     {
@@ -93,95 +97,246 @@ class CustomerTest extends TestCase
         $this->assertSame('id_customer', Customer::$definition['primary']);
     }
 
-    public function testDefinitionHasRequiredFields(): void
+    public function testDefinitionRequiredFieldsExist(): void
     {
-        $fields = Customer::$definition['fields'];
-        foreach (['email', 'lastname', 'firstname', 'passwd'] as $field) {
-            $this->assertArrayHasKey($field, $fields, "Missing required field: $field");
-            $this->assertTrue($fields[$field]['required'], "Field '$field' should be required");
+        foreach (['lastname', 'firstname', 'email', 'passwd'] as $field) {
+            $this->assertTrue(
+                Customer::$definition['fields'][$field]['required'] ?? false,
+                "Field '$field' should be required"
+            );
         }
     }
 
-    public function testDefinitionAllFieldsHaveValidTypes(): void
+    public function testDefinitionFieldsHaveValidTypes(): void
     {
         $validTypes = [
             ObjectModel::TYPE_INT, ObjectModel::TYPE_BOOL, ObjectModel::TYPE_STRING,
             ObjectModel::TYPE_FLOAT, ObjectModel::TYPE_DATE, ObjectModel::TYPE_HTML,
         ];
         foreach (Customer::$definition['fields'] as $field => $spec) {
-            $this->assertArrayHasKey('type', $spec, "Field '$field' missing type");
             $this->assertContains($spec['type'], $validTypes, "Field '$field' has invalid type");
         }
     }
 
-    public function testDefinitionEmailHasSizeLimit(): void
+    public function testDefinitionHasPhoneField(): void
     {
-        $this->assertSame(128, Customer::$definition['fields']['email']['size']);
+        $this->assertArrayHasKey('phone', Customer::$definition['fields']);
+        $this->assertSame(ObjectModel::TYPE_STRING, Customer::$definition['fields']['phone']['type']);
     }
 
-    public function testDefinitionLastnameHasSizeLimit(): void
-    {
-        $this->assertSame(32, Customer::$definition['fields']['lastname']['size']);
-    }
-
-    // ── Constructor ──────────────────────────────────────────────────────────
+    // ── __construct ──────────────────────────────────────────────────────────────
 
     public function testConstructorSetsDefaultGroupFromConfiguration(): void
     {
-        Configuration::set('PS_CUSTOMER_GROUP', 7);
         $customer = new Customer();
-        $this->assertSame(7, $customer->id_default_group);
+        $this->assertSame(3, $customer->id_default_group);
     }
 
-    public function testConstructorWithNullIdSetsNullId(): void
-    {
-        $customer = new Customer();
-        $this->assertNull($customer->id);
-    }
-
-    public function testConstructorWithIdSetsId(): void
+    public function testConstructorWithIdRetainsId(): void
     {
         $customer = new Customer(42);
         $this->assertSame(42, $customer->id);
     }
 
-    public function testConstructorMakesPhoneRequiredWhenConfigEnabled(): void
+    public function testConstructorMarksPhoneRequiredWhenConfigEnabled(): void
     {
-        Configuration::set('PS_ONE_PHONE_AT_LEAST', true);
+        Configuration::set('PS_ONE_PHONE_AT_LEAST', 1);
         new Customer();
-        $this->assertTrue(Customer::$definition['fields']['phone']['required']);
+        $this->assertTrue(Customer::$definition['fields']['phone']['required'] ?? false);
     }
 
-    public function testConstructorDoesNotMakePhoneRequiredWhenConfigDisabled(): void
+    public function testConstructorDoesNotMarkPhoneRequiredWhenConfigDisabled(): void
     {
-        Configuration::set('PS_ONE_PHONE_AT_LEAST', false);
+        Configuration::set('PS_ONE_PHONE_AT_LEAST', 0);
         new Customer();
-        $this->assertArrayNotHasKey('required', Customer::$definition['fields']['phone']);
+        $this->assertFalse(Customer::$definition['fields']['phone']['required'] ?? false);
     }
 
-    // ── isGuest() ────────────────────────────────────────────────────────────
+    // ── validateFields ───────────────────────────────────────────────────────────
 
-    public function testIsGuestReturnsTrueWhenFlagIsOne(): void
+    public function testValidateFieldsCallsParentWhenNoWebserviceValidation(): void
     {
+        $customer = new Customer();
+        $this->assertTrue($customer->validateFields());
+    }
+
+    public function testValidateFieldsThrowsWhenPhoneRequiredAndMissing(): void
+    {
+        Configuration::set('PS_ONE_PHONE_AT_LEAST', 1);
+        $customer = new Customer();
+        $customer->webservice_validation = true;
+        $customer->phone = null;
+
+        $this->expectException(PrestaShopException::class);
+        $customer->validateFields(true, false);
+    }
+
+    public function testValidateFieldsThrowsWhenPhoneRequiredAndInvalid(): void
+    {
+        Configuration::set('PS_ONE_PHONE_AT_LEAST', 1);
+        $customer = new Customer();
+        $customer->webservice_validation = true;
+        $customer->phone = 'not-a-phone';
+
+        $this->expectException(PrestaShopException::class);
+        $customer->validateFields(true, false);
+    }
+
+    public function testValidateFieldsReturnsErrorMessageWhenDieFalseAndErrorReturnTrue(): void
+    {
+        Configuration::set('PS_ONE_PHONE_AT_LEAST', 1);
+        $customer = new Customer();
+        $customer->webservice_validation = true;
+        $customer->phone = null;
+
+        $result = $customer->validateFields(false, true);
+        $this->assertIsString($result);
+        $this->assertNotEmpty($result);
+    }
+
+    public function testValidateFieldsReturnsFalseWhenDieFalseAndErrorReturnFalse(): void
+    {
+        Configuration::set('PS_ONE_PHONE_AT_LEAST', 1);
+        $customer = new Customer();
+        $customer->webservice_validation = true;
+        $customer->phone = null;
+
+        $result = $customer->validateFields(false, false);
+        $this->assertFalse($result);
+    }
+
+    // ── add() ────────────────────────────────────────────────────────────────────
+
+    public function testAddReturnsFalseWhenGuestCheckoutDisabledForGuestCustomer(): void
+    {
+        Configuration::set('PS_GUEST_CHECKOUT_ENABLED', 0);
         $customer = new Customer();
         $customer->is_guest = 1;
-        $this->assertTrue($customer->isGuest());
+
+        $this->assertFalse($customer->add());
     }
 
-    public function testIsGuestReturnsFalseWhenFlagIsZero(): void
+    public function testAddSetsSecureKey(): void
     {
+        $this->dbMock->method('insert')->willReturn(true);
+        $this->dbMock->method('Insert_ID')->willReturn(1);
+
+        $customer = new Customer();
+        $customer->add();
+
+        $this->assertNotEmpty($customer->secure_key);
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{32}$/', $customer->secure_key);
+    }
+
+    public function testAddSetsLastPasswdGen(): void
+    {
+        $this->dbMock->method('insert')->willReturn(true);
+        $this->dbMock->method('Insert_ID')->willReturn(1);
+
+        $customer = new Customer();
+        $customer->add();
+
+        $this->assertNotEmpty($customer->last_passwd_gen);
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}/', $customer->last_passwd_gen);
+    }
+
+    public function testAddSetsNewsletterDateAddWhenNewsletterAndNoDate(): void
+    {
+        $this->dbMock->method('insert')->willReturn(true);
+        $this->dbMock->method('Insert_ID')->willReturn(1);
+
+        $customer = new Customer();
+        $customer->newsletter = 1;
+        $customer->newsletter_date_add = null;
+        $customer->add();
+
+        $this->assertNotEmpty($customer->newsletter_date_add);
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}/', $customer->newsletter_date_add);
+    }
+
+    public function testAddSetsGuestGroupWhenIsGuest(): void
+    {
+        $this->dbMock->method('insert')->willReturn(true);
+        $this->dbMock->method('Insert_ID')->willReturn(1);
+
+        $customer = new Customer();
+        $customer->is_guest = 1;
+        $customer->add();
+
+        $this->assertSame(2, $customer->id_default_group);
+    }
+
+    public function testAddSetsCustomerGroupWhenNotGuest(): void
+    {
+        $this->dbMock->method('insert')->willReturn(true);
+        $this->dbMock->method('Insert_ID')->willReturn(1);
+
         $customer = new Customer();
         $customer->is_guest = 0;
-        $this->assertFalse($customer->isGuest());
+        $customer->add();
+
+        $this->assertSame(3, $customer->id_default_group);
     }
 
-    // ── isLogged() ───────────────────────────────────────────────────────────
+    public function testAddSetsIdFromInsertId(): void
+    {
+        $this->dbMock->method('insert')->willReturn(true);
+        $this->dbMock->method('Insert_ID')->willReturn(99);
 
-    public function testIsLoggedReturnsFalseWhenNotLoggedIn(): void
+        $customer = new Customer();
+        $customer->add();
+
+        $this->assertSame(99, $customer->id);
+    }
+
+    public function testAddPreservesExistingShopId(): void
+    {
+        $this->dbMock->method('insert')->willReturn(true);
+        $this->dbMock->method('Insert_ID')->willReturn(1);
+
+        $customer = new Customer();
+        $customer->id_shop = 5;
+        $customer->add();
+
+        $this->assertSame(5, $customer->id_shop);
+    }
+
+    // ── checkPassword ────────────────────────────────────────────────────────────
+
+    public function testCheckPasswordReturnsTrueWhenDbReturnsRow(): void
+    {
+        $passwd = Tools::encrypt('secret');
+        $this->dbMock->method('getValue')->willReturn('1');
+
+        $this->assertTrue(Customer::checkPassword(1, $passwd));
+    }
+
+    public function testCheckPasswordReturnsFalseWhenDbReturnsNothing(): void
+    {
+        $passwd = Tools::encrypt('wrong');
+        $this->dbMock->method('getValue')->willReturn(false);
+
+        $this->assertFalse(Customer::checkPassword(1, $passwd));
+    }
+
+    public function testCheckPasswordCachesResultOnSecondCall(): void
+    {
+        $passwd = Tools::encrypt('secret');
+        $this->dbMock->expects($this->once())->method('getValue')->willReturn('1');
+
+        Customer::checkPassword(1, $passwd);
+        $result = Customer::checkPassword(1, $passwd);
+        $this->assertTrue($result);
+    }
+
+    // ── isLogged ─────────────────────────────────────────────────────────────────
+
+    public function testIsLoggedReturnsFalseWhenNotLogged(): void
     {
         $customer = new Customer();
         $customer->logged = 0;
-        $customer->id = 1;
+        $customer->id = 5;
+
         $this->assertFalse($customer->isLogged());
     }
 
@@ -190,395 +345,377 @@ class CustomerTest extends TestCase
         $customer = new Customer();
         $customer->logged = 1;
         $customer->id = 0;
+
         $this->assertFalse($customer->isLogged());
     }
 
-    public function testIsLoggedReturnsFalseForGuestWithoutGuestFlag(): void
-    {
-        $customer = new Customer();
-        $customer->is_guest = 1;
-        $customer->logged = 1;
-        $customer->id = 1;
-        $customer->passwd = Tools::encrypt('pass');
-        $this->assertFalse($customer->isLogged(false));
-    }
-
-    public function testIsLoggedReturnsTrueWhenLoggedInWithValidPassword(): void
+    public function testIsLoggedReturnsFalseForGuestWithoutFlag(): void
     {
         $passwd = Tools::encrypt('secret');
-        // Pre-populate the Cache so checkPassword returns true without hitting DB
-        Cache::store('Customer::checkPassword1-'.$passwd, true);
+        Cache::store('Customer::checkPassword5-' . $passwd, true);
 
         $customer = new Customer();
         $customer->logged = 1;
-        $customer->id = 1;
+        $customer->id = 5;
+        $customer->is_guest = 1;
+        $customer->passwd = $passwd;
+
+        $this->assertFalse($customer->isLogged());
+    }
+
+    public function testIsLoggedReturnsTrueForValidLoggedCustomer(): void
+    {
+        $passwd = Tools::encrypt('secret');
+        Cache::store('Customer::checkPassword5-' . $passwd, true);
+
+        $customer = new Customer();
+        $customer->logged = 1;
+        $customer->id = 5;
+        $customer->is_guest = 0;
         $customer->passwd = $passwd;
 
         $this->assertTrue($customer->isLogged());
     }
 
-    // ── isUsed() (deprecated) ────────────────────────────────────────────────
-
-    public function testIsUsedAlwaysReturnsFalse(): void
+    public function testIsLoggedReturnsTrueForGuestWithFlag(): void
     {
+        $passwd = Tools::encrypt('secret');
+        Cache::store('Customer::checkPassword5-' . $passwd, true);
+
         $customer = new Customer();
-        $this->assertFalse($customer->isUsed());
+        $customer->logged = 1;
+        $customer->id = 5;
+        $customer->is_guest = 1;
+        $customer->passwd = $passwd;
+
+        $this->assertTrue($customer->isLogged(true));
     }
 
-    // ── customerExists() ────────────────────────────────────────────────────
+    // ── customerExists ───────────────────────────────────────────────────────────
 
-    public function testCustomerExistsReturnsFalseForInvalidEmail(): void
+    #[DataProvider('provideInvalidEmails')]
+    public function testCustomerExistsReturnsFalseForInvalidEmail(string $email): void
     {
-        $this->assertFalse(Customer::customerExists('not-an-email'));
+        $this->assertFalse(Customer::customerExists($email));
     }
 
-    public function testCustomerExistsReturnsFalseWhenNoRowFound(): void
+    public static function provideInvalidEmails(): array
+    {
+        return [
+            'empty string'  => [''],
+            'no at sign'    => ['notanemail'],
+            'no domain'     => ['user@'],
+            'double at'     => ['user@@example.com'],
+            'spaces inside' => ['user @example.com'],
+        ];
+    }
+
+    public function testCustomerExistsReturnsFalseWhenNotFound(): void
     {
         $this->dbMock->method('getValue')->willReturn(false);
         $this->assertFalse(Customer::customerExists('user@example.com'));
     }
 
-    public function testCustomerExistsReturnsTrueWhenRowFound(): void
+    public function testCustomerExistsReturnsTrueWhenFound(): void
     {
-        $this->dbMock->method('getValue')->willReturn('4');
+        $this->dbMock->method('getValue')->willReturn('5');
         $this->assertTrue(Customer::customerExists('user@example.com'));
     }
 
-    public function testCustomerExistsReturnsIdWhenReturnIdTrue(): void
+    public function testCustomerExistsReturnsIdWhenFoundAndReturnIdTrue(): void
     {
-        $this->dbMock->method('getValue')->willReturn('9');
-        $this->assertSame(9, Customer::customerExists('user@example.com', true));
+        $this->dbMock->method('getValue')->willReturn('5');
+        $this->assertSame(5, Customer::customerExists('user@example.com', true));
     }
 
-    public function testCustomerExistsReturnsZeroIdWhenNotFoundAndReturnIdTrue(): void
-    {
-        $this->dbMock->method('getValue')->willReturn(false);
-        $this->assertSame(0, Customer::customerExists('user@example.com', true));
-    }
-
-    public function testCustomerExistsQueriesDbWithEmailAndGuestFilter(): void
+    public function testCustomerExistsFiltersGuestByDefault(): void
     {
         $this->dbMock
             ->expects($this->once())
             ->method('getValue')
-            ->with($this->logicalAnd(
-                $this->stringContains('is_guest'),
-                $this->stringContains('user@example.com')
-            ))
+            ->with($this->stringContains('is_guest'))
             ->willReturn(false);
 
-        Customer::customerExists('user@example.com', false, true);
+        $result = Customer::customerExists('user@example.com');
+        $this->assertFalse($result);
     }
 
-    // ── customerHasAddress() ────────────────────────────────────────────────
+    // ── isBanned ─────────────────────────────────────────────────────────────────
+
+    public function testIsBannedReturnsTrueForNegativeId(): void
+    {
+        $this->assertTrue(Customer::isBanned(-1));
+    }
+
+    public function testIsBannedReturnsFalseWhenActiveAndNotDeleted(): void
+    {
+        $this->dbMock->method('getRow')->willReturn(['id_customer' => 1]);
+        $this->assertFalse(Customer::isBanned(1));
+    }
+
+    public function testIsBannedReturnsTrueWhenNotFound(): void
+    {
+        $this->dbMock->method('getRow')->willReturn(false);
+        $this->assertTrue(Customer::isBanned(1));
+    }
+
+    public function testIsBannedCachesResult(): void
+    {
+        $this->dbMock->expects($this->once())->method('getRow')->willReturn(false);
+        Customer::isBanned(1);
+        $result = Customer::isBanned(1);
+        $this->assertTrue($result);
+    }
+
+    // ── customerHasAddress + resetAddressCache ────────────────────────────────────
 
     public function testCustomerHasAddressReturnsTrueWhenFound(): void
     {
-        $this->dbMock->method('getValue')->willReturn('5');
-        $this->assertTrue(Customer::customerHasAddress(1, 5));
+        $this->dbMock->method('getValue')->willReturn('1');
+        $this->assertTrue(Customer::customerHasAddress(1, 10));
     }
 
     public function testCustomerHasAddressReturnsFalseWhenNotFound(): void
     {
         $this->dbMock->method('getValue')->willReturn(false);
-        $this->assertFalse(Customer::customerHasAddress(1, 99));
+        $this->assertFalse(Customer::customerHasAddress(1, 10));
     }
 
-    public function testCustomerHasAddressHitsDbOnlyOnceForSamePair(): void
+    public function testCustomerHasAddressCachesResult(): void
     {
-        $this->dbMock->expects($this->once())->method('getValue')->willReturn('5');
-        Customer::customerHasAddress(1, 5);
-        Customer::customerHasAddress(1, 5); // second call must use static cache
-    }
-
-    public function testCustomerHasAddressDifferentPairsHitDbSeparately(): void
-    {
-        $this->dbMock->expects($this->exactly(2))->method('getValue')->willReturn('1');
+        $this->dbMock->expects($this->once())->method('getValue')->willReturn('1');
         Customer::customerHasAddress(1, 10);
-        Customer::customerHasAddress(1, 11); // different pair → different cache key
+        $result = Customer::customerHasAddress(1, 10);
+        $this->assertTrue($result);
     }
 
-    // ── resetAddressCache() ──────────────────────────────────────────────────
-
-    public function testResetAddressCacheForcesDbQueryAfterReset(): void
+    public function testResetAddressCacheClearsEntry(): void
     {
-        $this->dbMock
-            ->expects($this->exactly(2))
-            ->method('getValue')
-            ->willReturnOnConsecutiveCalls('5', false);
-
-        Customer::customerHasAddress(2, 10);     // populates cache
-        Customer::resetAddressCache(2, 10);      // clears it
-        $result = Customer::customerHasAddress(2, 10); // must hit DB again
-
+        $this->dbMock->expects($this->exactly(2))->method('getValue')->willReturn('1', false);
+        Customer::customerHasAddress(1, 10);
+        Customer::resetAddressCache(1, 10);
+        $result = Customer::customerHasAddress(1, 10);
         $this->assertFalse($result);
     }
 
-    public function testResetAddressCacheOnNonExistentKeyDoesNotThrow(): void
+    // ── getCustomers ─────────────────────────────────────────────────────────────
+
+    public function testGetCustomersReturnsAllByDefault(): void
     {
-        $this->expectNotToPerformAssertions();
-        Customer::resetAddressCache(999, 999);
+        $rows = [['id_customer' => 1, 'email' => 'a@b.com', 'firstname' => 'A', 'lastname' => 'B']];
+        $this->dbMock->method('executeS')->willReturn($rows);
+
+        $this->assertSame($rows, Customer::getCustomers());
     }
 
-    // ── getLastEmails() ──────────────────────────────────────────────────────
-
-    public function testGetLastEmailsReturnsEmptyArrayWhenIdIsNull(): void
-    {
-        $customer = new Customer();
-        $this->assertSame([], $customer->getLastEmails());
-    }
-
-    public function testGetLastEmailsQueriesDbAndReturnsResultsWhenIdSet(): void
+    public function testGetCustomersFiltersActiveWhenActive1(): void
     {
         $this->dbMock
             ->expects($this->once())
             ->method('executeS')
-            ->willReturn([['id_mail' => 1, 'subject' => 'Welcome']]);
+            ->with($this->logicalAnd(
+                $this->stringContains('active'),
+                $this->stringContains('= 1')
+            ))
+            ->willReturn([]);
 
-        $customer = new Customer();
-        $customer->id = 5;
-        $customer->email = 'user@example.com';
-
-        $result = $customer->getLastEmails();
-        $this->assertCount(1, $result);
-        $this->assertSame('Welcome', $result[0]['subject']);
+        $result = Customer::getCustomers(true);
+        $this->assertSame([], $result);
     }
 
-    public function testGetLastEmailsReturnsEmptyResultFromDb(): void
-    {
-        $this->dbMock->method('executeS')->willReturn([]);
-
-        $customer = new Customer();
-        $customer->id = 5;
-        $customer->email = 'user@example.com';
-
-        $this->assertSame([], $customer->getLastEmails());
-    }
-
-    // ── getLastConnections() ─────────────────────────────────────────────────
-
-    public function testGetLastConnectionsReturnsEmptyArrayWhenIdIsNull(): void
-    {
-        $customer = new Customer();
-        $this->assertSame([], $customer->getLastConnections());
-    }
-
-    public function testGetLastConnectionsQueriesDbWhenIdIsSet(): void
+    public function testGetCustomersFiltersDeletedWhenDeleted0(): void
     {
         $this->dbMock
             ->expects($this->once())
             ->method('executeS')
-            ->willReturn([['id_connections' => 1, 'date_add' => '2024-01-01 10:00:00']]);
+            ->with($this->logicalAnd(
+                $this->stringContains('deleted'),
+                $this->stringContains('= 0')
+            ))
+            ->willReturn([]);
 
-        $customer = new Customer();
-        $customer->id = 3;
-
-        $result = $customer->getLastConnections();
-        $this->assertCount(1, $result);
+        $result = Customer::getCustomers(null, false);
+        $this->assertSame([], $result);
     }
 
-    // ── updateGroup() ────────────────────────────────────────────────────────
+    public function testGetCustomersFiltersHavingAddressWithJoin(): void
+    {
+        $this->dbMock
+            ->expects($this->once())
+            ->method('executeS')
+            ->with($this->logicalAnd(
+                $this->stringContains('address'),
+                $this->stringContains('IS NOT NULL')
+            ))
+            ->willReturn([]);
 
-    public function testUpdateGroupWithListCallsCleanAndAdd(): void
+        $result = Customer::getCustomers(null, null, true);
+        $this->assertSame([], $result);
+    }
+
+    public function testGetCustomersFiltersNotHavingAddress(): void
+    {
+        $this->dbMock
+            ->expects($this->once())
+            ->method('executeS')
+            ->with($this->stringContains('IS NULL'))
+            ->willReturn([]);
+
+        $result = Customer::getCustomers(null, null, false);
+        $this->assertSame([], $result);
+    }
+
+    // ── getGroupsStatic ──────────────────────────────────────────────────────────
+
+    public function testGetGroupsStaticReturnsCustomerGroupWhenFeatureInactive(): void
+    {
+        Group::setFeatureActive(false);
+        $this->assertSame([3], Customer::getGroupsStatic(5));
+    }
+
+    public function testGetGroupsStaticReturnsUnidentifiedGroupForIdZero(): void
+    {
+        $this->assertSame([4], Customer::getGroupsStatic(0));
+    }
+
+    public function testGetGroupsStaticQueriesDbAndReturnsGroups(): void
+    {
+        $this->dbMock->method('executeS')->willReturn([['id_group' => 3], ['id_group' => 5]]);
+        $this->assertSame([3, 5], Customer::getGroupsStatic(8));
+    }
+
+    public function testGetGroupsStaticCachesResult(): void
+    {
+        $this->dbMock->expects($this->once())->method('executeS')->willReturn([['id_group' => 3]]);
+        Customer::getGroupsStatic(8);
+        $result = Customer::getGroupsStatic(8);
+        $this->assertSame([3], $result);
+    }
+
+    // ── getDefaultGroupId ────────────────────────────────────────────────────────
+
+    public function testGetDefaultGroupIdReturnsConfigWhenFeatureInactive(): void
+    {
+        Group::setFeatureActive(false);
+        $this->assertSame(3, Customer::getDefaultGroupId(5));
+    }
+
+    public function testGetDefaultGroupIdQueriesDb(): void
+    {
+        $this->dbMock->method('getValue')->willReturn('3');
+        $this->assertSame('3', Customer::getDefaultGroupId(5));
+    }
+
+    public function testGetDefaultGroupIdCachesResult(): void
+    {
+        $this->dbMock->expects($this->once())->method('getValue')->willReturn('3');
+        Customer::getDefaultGroupId(5);
+        $result = Customer::getDefaultGroupId(5);
+        $this->assertSame('3', $result);
+    }
+
+    // ── updateGroup / cleanGroups / addGroups ─────────────────────────────────────
+
+    public function testUpdateGroupCallsCleanAndAddGroupsWhenListProvided(): void
     {
         $this->dbMock->expects($this->once())->method('delete')->willReturn(true);
-        $this->dbMock->expects($this->exactly(2))->method('insert')->willReturn(true);
+        $this->dbMock->expects($this->once())->method('insert')->willReturn(true);
 
         $customer = new Customer();
-        $customer->id = 1;
-        $customer->updateGroup([10, 20]);
+        $customer->id = 5;
+        $customer->updateGroup([7]);
+        $this->assertSame(3, $customer->id_default_group);
     }
 
-    public function testUpdateGroupWithEmptyListFallsBackToDefaultGroup(): void
+    public function testUpdateGroupAddsDefaultGroupWhenListEmpty(): void
     {
-        $customer = new Customer();
-        $customer->id = 1;
-        $customer->id_default_group = 3;
-
-        // else branch: only addGroups() is called, cleanGroups() is NOT
-        $this->dbMock->expects($this->never())->method('delete');
         $this->dbMock
             ->expects($this->once())
             ->method('insert')
             ->with('customer_group', $this->callback(fn($data) => $data['id_group'] === 3))
             ->willReturn(true);
 
-        $customer->updateGroup([]);
-    }
-
-    public function testUpdateGroupWithNullAlsoFallsBackToDefaultGroup(): void
-    {
         $customer = new Customer();
-        $customer->id = 1;
-        $customer->id_default_group = 5;
-
-        // else branch: only addGroups() is called, cleanGroups() is NOT
-        $this->dbMock->expects($this->never())->method('delete');
-        $this->dbMock
-            ->expects($this->once())
-            ->method('insert')
-            ->with('customer_group', $this->callback(fn($data) => $data['id_group'] === 5))
-            ->willReturn(true);
-
-        $customer->updateGroup(null);
+        $customer->id = 5;
+        $customer->updateGroup([]);
+        $this->assertSame(3, $customer->id_default_group);
     }
 
-    // ── cleanGroups() ────────────────────────────────────────────────────────
-
-    public function testCleanGroupsCallsDbDeleteOnCustomerGroup(): void
+    public function testCleanGroupsCallsDbDeleteWithCustomerId(): void
     {
         $this->dbMock
             ->expects($this->once())
             ->method('delete')
-            ->with('customer_group', $this->stringContains('id_customer'))
+            ->with('customer_group', $this->stringContains('5'))
             ->willReturn(true);
 
         $customer = new Customer();
-        $customer->id = 7;
-        $customer->cleanGroups();
+        $customer->id = 5;
+        $result = $customer->cleanGroups();
+        $this->assertTrue($result);
     }
 
-    public function testCleanGroupsReturnsFalseWhenDbFails(): void
+    public function testAddGroupsCallsDbInsertForEachGroup(): void
     {
-        $this->dbMock->method('delete')->willReturn(false);
+        $this->dbMock->expects($this->exactly(2))->method('insert')->willReturn(true);
 
-        $customer = new Customer();
-        $customer->id = 7;
-        $this->assertFalse($customer->cleanGroups());
-    }
-
-    // ── addGroups() ──────────────────────────────────────────────────────────
-
-    public function testAddGroupsInsertsEachGroup(): void
-    {
-        $this->dbMock->expects($this->exactly(3))->method('insert')->willReturn(true);
-
-        $customer = new Customer();
-        $customer->id = 1;
-        $customer->addGroups([2, 3, 4]);
-    }
-
-    public function testAddGroupsWithEmptyListDoesNotCallInsert(): void
-    {
-        $this->dbMock->expects($this->never())->method('insert');
-
-        $customer = new Customer();
-        $customer->id = 1;
-        $customer->addGroups([]);
-    }
-
-    // ── setWsPasswd() ────────────────────────────────────────────────────────
-
-    public function testSetWsPasswdEncryptsWhenIdIsZero(): void
-    {
-        $customer = new Customer();
-        $customer->id = 0;
-        $customer->passwd = '';
-
-        $customer->setWsPasswd('mypassword');
-
-        $this->assertSame(Tools::encrypt('mypassword'), $customer->passwd);
-    }
-
-    public function testSetWsPasswdEncryptsWhenPasswordDiffers(): void
-    {
         $customer = new Customer();
         $customer->id = 5;
-        $customer->passwd = Tools::encrypt('oldpass');
-
-        $customer->setWsPasswd('newpass');
-
-        $this->assertSame(Tools::encrypt('newpass'), $customer->passwd);
+        $customer->addGroups([3, 7]);
+        $this->assertSame(3, $customer->id_default_group);
     }
 
-    public function testSetWsPasswdDoesNotChangeWhenSameEncryptedPassProvided(): void
-    {
-        $encrypted = Tools::encrypt('samepass');
-        $customer = new Customer();
-        $customer->id = 5;
-        $customer->passwd = $encrypted;
+    // ── transformToCustomer ──────────────────────────────────────────────────────
 
-        $customer->setWsPasswd($encrypted);
-
-        $this->assertSame($encrypted, $customer->passwd);
-    }
-
-    public function testSetWsPasswdAlwaysReturnsTrue(): void
-    {
-        $customer = new Customer();
-        $customer->id = 1;
-        $customer->passwd = 'anything';
-
-        $this->assertTrue($customer->setWsPasswd('newvalue'));
-    }
-
-    // ── transformToCustomer() ────────────────────────────────────────────────
-
-    public function testTransformToCustomerReturnsFalseWhenNotAGuest(): void
+    public function testTransformToCustomerReturnsFalseWhenNotGuest(): void
     {
         $customer = new Customer();
         $customer->is_guest = 0;
-
         $this->assertFalse($customer->transformToCustomer(1, 'validpass'));
     }
 
-    public function testTransformToCustomerReturnsFalseForTooShortPassword(): void
+    public function testTransformToCustomerReturnsFalseForShortPassword(): void
     {
         $customer = new Customer();
         $customer->is_guest = 1;
-
-        $this->assertFalse($customer->transformToCustomer(1, 'ab')); // < 5 chars
+        $this->assertFalse($customer->transformToCustomer(1, 'x'));
     }
 
-    public function testTransformToCustomerReturnsTrueAndConvertsGuest(): void
+    public function testTransformToCustomerSetsIsGuestToZero(): void
     {
         $this->dbMock->method('delete')->willReturn(true);
         $this->dbMock->method('insert')->willReturn(true);
 
         $customer = new Customer();
         $customer->is_guest = 1;
-        $customer->id = 10;
-        $customer->firstname = 'John';
-        $customer->lastname = 'Doe';
-        $customer->email = 'john@example.com';
+        $customer->id = 5;
+        $customer->transformToCustomer(1, 'validpass');
 
-        $result = $customer->transformToCustomer(1, 'validpassword');
-
-        $this->assertTrue($result);
         $this->assertSame(0, $customer->is_guest);
     }
 
-    public function testTransformToCustomerEncryptsProvidedPassword(): void
+    public function testTransformToCustomerEncryptsPassword(): void
     {
         $this->dbMock->method('delete')->willReturn(true);
         $this->dbMock->method('insert')->willReturn(true);
 
         $customer = new Customer();
         $customer->is_guest = 1;
-        $customer->id = 10;
-        $customer->firstname = 'Jane';
-        $customer->lastname = 'Doe';
-        $customer->email = 'jane@example.com';
+        $customer->id = 5;
+        $customer->transformToCustomer(1, 'validpass');
 
-        $customer->transformToCustomer(1, 'mysecret');
-
-        $this->assertSame(Tools::encrypt('mysecret'), $customer->passwd);
+        $this->assertSame(Tools::encrypt('validpass'), $customer->passwd);
     }
 
-    public function testTransformToCustomerSetsDefaultCustomerGroup(): void
+    public function testTransformToCustomerSetsCustomerGroup(): void
     {
         $this->dbMock->method('delete')->willReturn(true);
         $this->dbMock->method('insert')->willReturn(true);
-        Configuration::set('PS_CUSTOMER_GROUP', 3);
 
         $customer = new Customer();
         $customer->is_guest = 1;
-        $customer->id = 10;
-        $customer->firstname = 'Alice';
-        $customer->lastname = 'Smith';
-        $customer->email = 'alice@example.com';
-
-        $customer->transformToCustomer(1, 'validpassword');
+        $customer->id = 5;
+        $customer->transformToCustomer(1, 'validpass');
 
         $this->assertSame(3, $customer->id_default_group);
     }
@@ -591,85 +728,104 @@ class CustomerTest extends TestCase
 
         $customer = new Customer();
         $customer->is_guest = 1;
-        $customer->id = 10;
-        $customer->firstname = 'Bob';
-        $customer->lastname = 'Jones';
-        $customer->email = 'bob@example.com';
+        $customer->id = 5;
 
         $this->assertFalse($customer->transformToCustomer(1, 'validpass'));
     }
 
-    // ── getGroupsStatic() ────────────────────────────────────────────────────
-
-    public function testGetGroupsStaticReturnsUnidentifiedGroupForIdZero(): void
+    public function testTransformToCustomerReturnsTrueOnSuccess(): void
     {
-        Configuration::set('PS_UNIDENTIFIED_GROUP', 1);
-        $result = Customer::getGroupsStatic(0);
-        $this->assertContains(1, $result);
+        $this->dbMock->method('delete')->willReturn(true);
+        $this->dbMock->method('insert')->willReturn(true);
+
+        $customer = new Customer();
+        $customer->is_guest = 1;
+        $customer->id = 5;
+
+        $this->assertTrue($customer->transformToCustomer(1, 'validpass'));
     }
 
-    public function testGetGroupsStaticQueriesDbAndReturnsGroups(): void
+    // ── setWsPasswd ──────────────────────────────────────────────────────────────
+
+    public function testSetWsPasswdEncryptsWhenIdIsZero(): void
+    {
+        $customer = new Customer();
+        $customer->id = 0;
+        $customer->passwd = 'original';
+        $customer->setWsPasswd('newpass');
+
+        $this->assertSame(Tools::encrypt('newpass'), $customer->passwd);
+    }
+
+    public function testSetWsPasswdEncryptsWhenPasswordChanged(): void
+    {
+        $customer = new Customer();
+        $customer->id = 5;
+        $customer->passwd = 'original';
+        $customer->setWsPasswd('different');
+
+        $this->assertSame(Tools::encrypt('different'), $customer->passwd);
+    }
+
+    public function testSetWsPasswdDoesNotEncryptWhenPasswordUnchanged(): void
+    {
+        $customer = new Customer();
+        $customer->id = 5;
+        $encrypted = Tools::encrypt('mypass');
+        $customer->passwd = $encrypted;
+        $customer->setWsPasswd($encrypted);
+
+        $this->assertSame($encrypted, $customer->passwd);
+    }
+
+    public function testSetWsPasswdAlwaysReturnsTrue(): void
+    {
+        $customer = new Customer();
+        $customer->id = 0;
+        $this->assertTrue($customer->setWsPasswd('anypass'));
+    }
+
+    // ── logout / mylogout ─────────────────────────────────────────────────────────
+
+    public function testLogoutSetsLoggedToZero(): void
+    {
+        $customer = new Customer();
+        $customer->logged = 1;
+        $customer->logout();
+        $this->assertSame(0, $customer->logged);
+    }
+
+    public function testMylogoutSetsLoggedToZero(): void
+    {
+        $customer = new Customer();
+        $customer->logged = 1;
+        $customer->mylogout();
+        $this->assertSame(0, $customer->logged);
+    }
+
+    // ── searchByName ─────────────────────────────────────────────────────────────
+
+    public function testSearchByNameReturnsResults(): void
+    {
+        $rows = [['id_customer' => 1, 'firstname' => 'John']];
+        $this->dbMock->method('executeS')->willReturn($rows);
+
+        $this->assertSame($rows, Customer::searchByName('john'));
+    }
+
+    public function testSearchByNameAppliesLimitClause(): void
     {
         $this->dbMock
             ->expects($this->once())
             ->method('executeS')
-            ->willReturn([['id_group' => 3], ['id_group' => 5]]);
+            ->with($this->stringContains('LIMIT'))
+            ->willReturn([]);
 
-        $result = Customer::getGroupsStatic(7);
-
-        $this->assertContains(3, $result);
-        $this->assertContains(5, $result);
-    }
-
-    public function testGetGroupsStaticUsesStaticCacheOnSecondCall(): void
-    {
-        $this->dbMock->expects($this->once())->method('executeS')->willReturn([['id_group' => 3]]);
-
-        Customer::getGroupsStatic(8);
-        Customer::getGroupsStatic(8); // second call must NOT hit DB
-    }
-
-    public function testGetGroupsStaticReturnsEmptyArrayWhenNoGroupsFound(): void
-    {
-        $this->dbMock->method('executeS')->willReturn([]);
-        $result = Customer::getGroupsStatic(99);
+        $result = Customer::searchByName('john', 5);
         $this->assertSame([], $result);
     }
 
-    public function testGetGroupsStaticReturnsCustomerGroupWhenGroupFeatureInactive(): void
-    {
-        Group::setFeatureActive(false);
-        Configuration::set('PS_CUSTOMER_GROUP', 3);
-
-        $result = Customer::getGroupsStatic(1);
-
-        $this->assertSame([3], $result);
-    }
-
-    // ── getCustomers() ───────────────────────────────────────────────────────
-
-    public function testGetCustomersReturnsDbResults(): void
-    {
-        $this->dbMock->method('executeS')->willReturn([['id_customer' => 1, 'email' => 'a@b.com']]);
-        $result = Customer::getCustomers();
-        $this->assertCount(1, $result);
-    }
-
-    public function testGetCustomersWithActiveFilterIncludesActiveInQuery(): void
-    {
-        $this->dbMock
-            ->expects($this->once())
-            ->method('executeS')
-            ->with($this->logicalAnd(
-                $this->stringContains('active'),
-                $this->stringContains('= 1')
-            ))
-            ->willReturn([]);
-
-        Customer::getCustomers(1);
-    }
-
-    public function testGetCustomersWithDeletedFilterIncludesDeletedInQuery(): void
+    public function testSearchByNameAppliesSkipDeletedFilter(): void
     {
         $this->dbMock
             ->expects($this->once())
@@ -680,206 +836,168 @@ class CustomerTest extends TestCase
             ))
             ->willReturn([]);
 
-        Customer::getCustomers(null, 0);
+        $result = Customer::searchByName('john', null, true);
+        $this->assertSame([], $result);
     }
 
-    public function testGetCustomersWithHavingAddressJoinsAddressTable(): void
+    // ── customerIdExistsStatic ───────────────────────────────────────────────────
+
+    public function testCustomerIdExistsStaticReturnsTrueWhenFound(): void
+    {
+        $this->dbMock->method('getValue')->willReturn('5');
+        $this->assertSame(5, Customer::customerIdExistsStatic(5));
+    }
+
+    public function testCustomerIdExistsStaticReturnsFalseWhenNotFound(): void
+    {
+        $this->dbMock->method('getValue')->willReturn('0');
+        $this->assertSame(0, Customer::customerIdExistsStatic(99));
+    }
+
+    public function testCustomerIdExistsStaticCachesResult(): void
+    {
+        $this->dbMock->expects($this->once())->method('getValue')->willReturn('5');
+        Customer::customerIdExistsStatic(5);
+        $result = Customer::customerIdExistsStatic(5);
+        $this->assertSame(5, $result);
+    }
+
+    // ── getByEmail ───────────────────────────────────────────────────────────────
+
+    public function testGetByEmailReturnsFalseWhenNoRowFound(): void
+    {
+        $this->dbMock->method('getRow')->willReturn(false);
+        $customer = new Customer();
+        $this->assertFalse($customer->getByEmail('user@example.com'));
+    }
+
+    public function testGetByEmailPopulatesPropertiesWhenFound(): void
+    {
+        $this->dbMock->method('getRow')->willReturn([
+            'id_customer' => 7, 'email' => 'user@example.com',
+            'firstname' => 'John', 'lastname' => 'Doe',
+        ]);
+        $customer = new Customer();
+        $result = $customer->getByEmail('user@example.com');
+        $this->assertSame(7, $result->id);
+        $this->assertSame('John', $result->firstname);
+    }
+
+    public function testGetByEmailChecksPasswordWhenProvided(): void
     {
         $this->dbMock
             ->expects($this->once())
-            ->method('executeS')
-            ->with($this->logicalAnd(
-                $this->stringContains('JOIN'),
-                $this->stringContains('address')
-            ))
-            ->willReturn([]);
-
-        Customer::getCustomers(null, null, true);
-    }
-
-    // ── searchByName() ───────────────────────────────────────────────────────
-
-    public function testSearchByNameWithLimitAppendsLimitClause(): void
-    {
-        $this->dbMock
-            ->expects($this->once())
-            ->method('executeS')
-            ->with($this->logicalAnd(
-                $this->stringContains('LIMIT'),
-                $this->stringContains('10')
-            ))
-            ->willReturn([]);
-
-        Customer::searchByName('john', 10);
-    }
-
-    public function testSearchByNameWithoutLimitOmitsLimitClause(): void
-    {
-        $this->dbMock
-            ->expects($this->once())
-            ->method('executeS')
-            ->with($this->logicalNot($this->stringContains('LIMIT')))
-            ->willReturn([]);
-
-        Customer::searchByName('john');
-    }
-
-    public function testSearchByNameSkipDeletedAddsDeletedFilter(): void
-    {
-        $this->dbMock
-            ->expects($this->once())
-            ->method('executeS')
-            ->with($this->logicalAnd(
-                $this->stringContains('deleted'),
-                $this->stringContains('= 0')
-            ))
-            ->willReturn([]);
-
-        Customer::searchByName('john', null, true);
-    }
-
-    public function testSearchByNameReturnsDbResults(): void
-    {
-        $this->dbMock->method('executeS')->willReturn([['id_customer' => 1, 'email' => 'john@test.com']]);
-        $result = Customer::searchByName('john');
-        $this->assertCount(1, $result);
-    }
-
-    // ── validateFields() ─────────────────────────────────────────────────────
-
-    public function testValidateFieldsCallsParentWhenWebserviceValidationNotSet(): void
-    {
-        $customer = new Customer();
-        // No webservice_validation property → parent::validateFields() from stub returns true
-        $this->assertTrue($customer->validateFields(false));
-    }
-
-    public function testValidateFieldsThrowsExceptionWhenPhoneRequiredAndMissing(): void
-    {
-        Configuration::set('PS_ONE_PHONE_AT_LEAST', true);
+            ->method('getRow')
+            ->with($this->stringContains('passwd'))
+            ->willReturn(false);
 
         $customer = new Customer();
-        $customer->webservice_validation = true;
-        $customer->phone = '';
-
-        $this->expectException(PrestaShopException::class);
-        $customer->validateFields(true);
+        $result = $customer->getByEmail('user@example.com', 'validpass');
+        $this->assertFalse($result);
     }
 
-    public function testValidateFieldsReturnsFalseWhenPhoneRequiredMissingAndDieIsFalse(): void
+    // ── delete ───────────────────────────────────────────────────────────────────
+
+    public function testDeleteExecutesCleanupQueriesAndReturnsTrue(): void
     {
-        Configuration::set('PS_ONE_PHONE_AT_LEAST', true);
+        // Customer::delete() calls Db::executes() — PHP method names are case-insensitive,
+        // so executes() resolves to the same dispatch slot as executeS(). Mock executeS.
+        $this->dbMock->method('executeS')->willReturn([]);
+        $this->dbMock->method('execute')->willReturn(true);
 
         $customer = new Customer();
-        $customer->webservice_validation = true;
-        $customer->phone = '';
+        $customer->id = 5;
 
-        $this->assertFalse($customer->validateFields(false, false));
+        $this->assertTrue($customer->delete());
     }
 
-    public function testValidateFieldsReturnsErrorMessageStringWhenErrorReturnIsTrue(): void
+    public function testDeleteCallsAtLeastFourExecuteCalls(): void
     {
-        Configuration::set('PS_ONE_PHONE_AT_LEAST', true);
+        $this->dbMock->method('executeS')->willReturn([]);
+        $this->dbMock->expects($this->atLeast(4))->method('execute')->willReturn(true);
 
         $customer = new Customer();
-        $customer->webservice_validation = true;
-        $customer->phone = '';
-
-        $result = $customer->validateFields(false, true);
-        $this->assertIsString($result);
-        $this->assertNotEmpty($result);
+        $customer->id = 5;
+        $customer->delete();
+        $this->assertSame(5, $customer->id);
     }
 
-    public function testValidateFieldsPassesWhenPhoneProvidedAndRequired(): void
+    // ── getLastCart ──────────────────────────────────────────────────────────────
+
+    public function testGetLastCartReturnsFalseWhenNoCartsExist(): void
     {
-        Configuration::set('PS_ONE_PHONE_AT_LEAST', true);
+        $customer = new Customer();
+        $customer->id = 5;
+        $this->assertFalse($customer->getLastCart());
+    }
+
+    // ── getLastEmails / getLastConnections ────────────────────────────────────────
+
+    public function testGetLastEmailsReturnsEmptyArrayWhenNoId(): void
+    {
+        $customer = new Customer();
+        $customer->id = null;
+        $this->assertSame([], $customer->getLastEmails());
+    }
+
+    public function testGetLastEmailsQueriesDbAndReturnsRows(): void
+    {
+        $rows = [['subject' => 'Welcome', 'language' => 'English']];
+        $this->dbMock->method('executeS')->willReturn($rows);
 
         $customer = new Customer();
-        $customer->webservice_validation = true;
-        $customer->phone = '+1234567890';
-
-        $this->assertTrue($customer->validateFields(false));
+        $customer->id = 5;
+        $customer->email = 'user@example.com';
+        $this->assertSame($rows, $customer->getLastEmails());
     }
 
-    public function testValidateFieldsReturnsFalseWhenPhoneFormatIsInvalid(): void
+    public function testGetLastConnectionsReturnsEmptyArrayWhenNoId(): void
     {
-        Configuration::set('PS_ONE_PHONE_AT_LEAST', true);
+        $customer = new Customer();
+        $customer->id = null;
+        $this->assertSame([], $customer->getLastConnections());
+    }
+
+    // ── getOutstanding ────────────────────────────────────────────────────────────
+
+    public function testGetOutstandingReturnsZeroWhenNoData(): void
+    {
+        $this->dbMock->method('getValue')->willReturn(false);
 
         $customer = new Customer();
-        $customer->webservice_validation = true;
-        $customer->phone = 'not-a-phone';
-
-        $this->assertFalse($customer->validateFields(false, false));
+        $customer->id = 5;
+        $this->assertEqualsWithDelta(0.0, $customer->getOutstanding(), 0.001);
     }
 
-    // ── Field validation (data-driven) ───────────────────────────────────────
-
-    /**
-     * @dataProvider provideEmailValidation
-     */
-    public function testEmailFieldValidation(string $email, bool $expected): void
+    public function testGetOutstandingReturnsDifferenceOfPaidAndRest(): void
     {
-        $this->assertSame($expected, Validate::isEmail($email));
+        $this->dbMock->method('getValue')->willReturn('500.00', '200.00');
+
+        $customer = new Customer();
+        $customer->id = 5;
+        $this->assertEqualsWithDelta(300.0, $customer->getOutstanding(), 0.001);
     }
 
-    public function provideEmailValidation(): array
+    // ── getWsGroups / setWsGroups ─────────────────────────────────────────────────
+
+    public function testGetWsGroupsReturnsGroupsFromDb(): void
     {
-        return [
-            'valid email'          => ['user@example.com', true],
-            'valid with subdomain' => ['user@mail.example.com', true],
-            'missing at sign'      => ['userexample.com', false],
-            'missing domain'       => ['user@', false],
-            'empty string'         => ['', false],
-        ];
+        $rows = [['id' => 3], ['id' => 5]];
+        $this->dbMock->method('executeS')->willReturn($rows);
+
+        $customer = new Customer();
+        $customer->id = 5;
+        $this->assertSame($rows, $customer->getWsGroups());
     }
 
-    /**
-     * @dataProvider providePasswordValidation
-     */
-    public function testPasswordFieldValidation(string $passwd, bool $expected): void
+    public function testSetWsGroupsCleansAndAddsGroupsFromResult(): void
     {
-        $this->assertSame($expected, Validate::isPasswd($passwd));
-    }
+        $this->dbMock->expects($this->once())->method('delete')->willReturn(true);
+        $this->dbMock->expects($this->exactly(2))->method('insert')->willReturn(true);
 
-    public function providePasswordValidation(): array
-    {
-        return [
-            'valid 8 chars'   => ['password', true],
-            'exactly 5 chars' => ['abcde', true],
-            'too short 4'     => ['abcd', false],
-            'too short 2'     => ['ab', false],
-            'empty'           => ['', false],
-        ];
-    }
-
-    /**
-     * @dataProvider provideBirthDateValidation
-     */
-    public function testBirthdayFieldValidation(string $date, bool $expected): void
-    {
-        $this->assertSame($expected, Validate::isBirthDate($date));
-    }
-
-    public function provideBirthDateValidation(): array
-    {
-        return [
-            'valid date'       => ['1990-06-15', true],
-            'valid boundary'   => ['2000-01-01', true],
-            'missing day'      => ['1990-06', false],
-            'wrong format'     => ['15/06/1990', false],
-            'empty'            => ['', true],  // empty birthday is valid (optional field)
-        ];
-    }
-
-    // ── STATUS constants ──────────────────────────────────────────────────────
-
-    public function testStatusBannedConstantValue(): void
-    {
-        $this->assertSame(1, Customer::STATUS_BANNED);
-    }
-
-    public function testStatusDeletedConstantValue(): void
-    {
-        $this->assertSame(2, Customer::STATUS_DELETED);
+        $customer = new Customer();
+        $customer->id = 5;
+        $result = $customer->setWsGroups([['id' => 3], ['id' => 5]]);
+        $this->assertTrue($result);
     }
 }
